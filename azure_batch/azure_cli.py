@@ -20,10 +20,7 @@ import uuid
 from azure.batch import BatchServiceClient
 import azure.batch.models as batchmodels
 from azure.common.credentials import ServicePrincipalCredentials
-from azure.core.exceptions import (
-    ResourceExistsError,
-    ResourceNotFoundError
-)
+from azure.core.exceptions import ResourceExistsError
 from azure.storage.blob import (
     AccountSasPermissions,
     BlobServiceClient,
@@ -235,14 +232,15 @@ class AzureBatch:
             raise
 
         finally:
-            logging.warning('Cleaning up pool and job')
-            # Clean up Batch resources
-            batch_client.job.delete(job_id)
-            batch_client.pool.delete(pool_id)
+            if self.tidy:
+                logging.warning('Cleaning up pool and job')
+                # Clean up Batch resources
+                batch_client.job.delete(job_id)
+                batch_client.pool.delete(pool_id)
 
     def __init__(self, command_file, vm_size, settings, container, path, upload_folder=None,
                  input_file_pattern=None, bulk_input_file_pattern=None, download_file_pattern=None,
-                 unique_id=None, worker=True):
+                 unique_id=None, worker=True, tidy=True):
 
         # Use datetime.datatime to set the current time. Will be used to calculate timeouts
         self.start_time = datetime.datetime.now().replace(microsecond=0)
@@ -273,6 +271,7 @@ class AzureBatch:
         self.vm_size = vm_size
         self.worker = worker
         self.download_file_pattern = download_file_pattern
+        self.tidy = tidy
 
 
 def cli():
@@ -396,6 +395,12 @@ def cli():
         help='Set the logging level. Options are debug, info, warning, error, and critical. '
              'Default is info.'
     )
+    parser.add_argument(
+        '-t', '--tidy',
+        action='store_true',
+        help='Do not automatically delete pools/jobs/tasks when the script errors or completes. Useful for debugging '
+             'VM. PLEASE REMEMBER TO CLEAN EVERYTHING UP MANUALLY'
+    )
     arguments = parser.parse_args()
     logging.basicConfig(
         level=arguments.verbosity.upper(),
@@ -405,7 +410,8 @@ def cli():
     assert os.path.isfile(arguments.settings)
     dotenv_path = Path(arguments.settings)
     load_dotenv(dotenv_path=dotenv_path)
-    local_settings = dotenv_values(dotenv_path)
+    settings_dict = dotenv_values(dotenv_path)
+    local_settings = Settings(settings=settings_dict)
 
     azure_batch = AzureBatch(
         command_file=arguments.cmd,
@@ -418,7 +424,8 @@ def cli():
         bulk_input_file_pattern=arguments.bulk_input_file_pattern,
         download_file_pattern=arguments.download_file_pattern,
         unique_id=arguments.unique_id,
-        worker=False
+        worker=False,
+        tidy=arguments.tidy
     )
     azure_batch.main()
     raise SystemExit
