@@ -1,6 +1,6 @@
 site_name: OLC Bioinformatics Azure Batch Library
 site_url:  https://OLC-LOC-Bioinformatics.github.io/AzureBatch/
-site_description: Python library for
-repo_url:  https://github.com/OLC-LOC-Bioinformatics/AzureStorage/
+site_description: Python library for automating batch workflows in Azure
+repo_url:  https://github.com/OLC-LOC-Bioinformatics/AzureBatch/
 edit_uri: edit/main/docs/
 theme: readthedocs
