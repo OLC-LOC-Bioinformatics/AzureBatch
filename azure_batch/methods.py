@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import sys
 import time
+from tqdm import tqdm
 
 # Third party imports
 from azure.batch import BatchServiceClient
@@ -33,6 +34,17 @@ from azure_storage.methods import (
 
 __author__ = 'adamkoziol'
 
+class TqdmUpTo(tqdm):
+    """
+    Provides `update_to(n)` which uses `tqdm.update(delta_n)`.
+    """
+    def update_to(self, response):
+        current = response.context['upload_stream_current']  #There's also a 'download_stream_current'
+        total = response.context['data_stream_total']
+        if total is not None:
+            self.total = total
+        if current is not None:
+            return self.update(current - self.n)
 
 class Settings:
     AZURE_ACCOUNT_NAME = os.getenv('AZURE_ACCOUNT_NAME')
@@ -88,10 +100,20 @@ def upload_file_to_container(
 
     # Upload the file to storage. Don't overwrite any previous versions
     try:
-        with open(file_path, "rb") as data:
-            blob_client.upload_blob(data, overwrite=overwrite)
+        # Progress bar with upload
+        with TqdmUpTo(unit='B', unit_scale=True, unit_divisor=1024, miniters=1,
+            desc=blob_name) as t:
+                with open(file_path, "rb") as data:
+                    blob_client.upload_blob(
+                        data,
+                        overwrite=overwrite,
+                        raw_response_hook=t.update_to,
+                        connection_timeout=1200
+                        )
+                t.total = t.n
+        logging.warning(f"File '{blob_name}' successfully uploaded.")
     except ResourceExistsError:
-        pass
+        logging.warning(f"File '{blob_name}' already exists. Skipping...")
 
 
 def generate_sas_url(
@@ -423,7 +445,9 @@ def upload_prep(
         raise SystemExit from exc
 
     # Use glob recursively to find all the files in the supplied upload folder
-    input_file_paths = glob(os.path.join(upload_folder, '**', '*'), recursive=True)
+    input_file_paths = sorted(glob(os.path.join(upload_folder, '**', '*'), recursive=True))
+
+    logging.debug(input_file_paths)
 
     # Upload the data files.
     for input_file_path in input_file_paths:
