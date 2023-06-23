@@ -37,7 +37,7 @@ from azure_storage.methods import (
     create_container_client,
     validate_container_name
 )
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 
 from azure_batch.methods import (
     add_tasks,
@@ -402,9 +402,10 @@ def cli():
         format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
     # Load the environment variables from file
+    assert os.path.isfile(arguments.settings)
     dotenv_path = Path(arguments.settings)
     load_dotenv(dotenv_path=dotenv_path)
-    local_settings = Settings()
+    local_settings = dotenv_values(dotenv_path)
 
     azure_batch = AzureBatch(
         command_file=arguments.cmd,
