@@ -34,28 +34,32 @@ from azure_storage.methods import (
 
 __author__ = 'adamkoziol'
 
+
 class TqdmUpTo(tqdm):
     """
     Provides `update_to(n)` which uses `tqdm.update(delta_n)`.
     """
+
     def update_to(self, response):
-        current = response.context['upload_stream_current']  #There's also a 'download_stream_current'
+        current = response.context['upload_stream_current']  # There's also a 'download_stream_current'
         total = response.context['data_stream_total']
         if total is not None:
             self.total = total
         if current is not None:
             return self.update(current - self.n)
 
+
 class Settings:
-    AZURE_ACCOUNT_NAME = os.getenv('AZURE_ACCOUNT_NAME')
-    AZURE_ACCOUNT_KEY = os.getenv('AZURE_ACCOUNT_KEY')
-    BATCH_ACCOUNT_NAME = os.getenv('BATCH_ACCOUNT_NAME')
-    BATCH_ACCOUNT_URL = os.getenv('BATCH_ACCOUNT_URL')
-    BATCH_ACCOUNT_KEY = os.getenv('BATCH_ACCOUNT_KEY')
-    VM_IMAGE = os.getenv('VM_IMAGE')
-    VM_CLIENT_ID = os.getenv('VM_CLIENT_ID')
-    VM_SECRET = os.getenv('VM_SECRET')
-    VM_TENANT = os.getenv('VM_TENANT')
+    def __init__(self, settings):
+        self.AZURE_ACCOUNT_NAME = settings['AZURE_ACCOUNT_NAME']
+        self.AZURE_ACCOUNT_KEY = settings['AZURE_ACCOUNT_KEY']
+        self.BATCH_ACCOUNT_NAME = settings['BATCH_ACCOUNT_NAME']
+        self.BATCH_ACCOUNT_URL = settings['BATCH_ACCOUNT_URL']
+        self.BATCH_ACCOUNT_KEY = settings['BATCH_ACCOUNT_KEY']
+        self.VM_IMAGE = settings['VM_IMAGE']
+        self.VM_CLIENT_ID = settings['VM_CLIENT_ID']
+        self.VM_SECRET = settings['VM_SECRET']
+        self.VM_TENANT = settings['VM_TENANT']
 
 
 def print_batch_exception(
@@ -101,16 +105,15 @@ def upload_file_to_container(
     # Upload the file to storage. Don't overwrite any previous versions
     try:
         # Progress bar with upload
-        with TqdmUpTo(unit='B', unit_scale=True, unit_divisor=1024, miniters=1,
-            desc=blob_name) as t:
-                with open(file_path, "rb") as data:
-                    blob_client.upload_blob(
-                        data,
-                        overwrite=overwrite,
-                        raw_response_hook=t.update_to,
-                        connection_timeout=1200
-                        )
-                t.total = t.n
+        with TqdmUpTo(unit='B', unit_scale=True, unit_divisor=1024, miniters=1, desc=blob_name) as t:
+            with open(file_path, "rb") as data:
+                blob_client.upload_blob(
+                    data,
+                    overwrite=overwrite,
+                    raw_response_hook=t.update_to,
+                    connection_timeout=1200
+                    )
+            t.total = t.n
         logging.warning(f"File '{blob_name}' successfully uploaded.")
     except ResourceExistsError:
         logging.warning(f"File '{blob_name}' already exists. Skipping...")
