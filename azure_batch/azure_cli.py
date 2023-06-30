@@ -284,57 +284,77 @@ def cli():
         metavar='container',
         required=True,
         type=str,
-        help='Name of container for input files to be used in the analyses. This container will be mounted to the '
-             'VM using blobfuse, so all input files must either already be present, uploaded (--upload), or copied '
-             '(-input or -bulk_input) to this container'
+        help="""
+        Name of container for input files to be used in the analyses. This 
+        container will be mounted to the VM using blobfuse, so all input files 
+        must either already be present, uploaded (--upload), or copied (-input 
+        or -bulk_input) to this container.
+        """
     )
     parser.add_argument(
         '-cmd', '--cmd',
-        metavar='system call file',
+        metavar='system_call_file',
         required=True,
         type=str,
-        help='Name and path of file containing system call(s) to run in task(s) (one per line). '
-             'The command(s) must include any environment activation steps e.g. \n'
-             'source $CONDA/activate /envs/cowbat && assembly_pipeline.py -s $AZ_BATCH_NODE_MOUNTS_DIR/container-name '
-             '-r /databases/0.5.0.23\n Note that the $CONDA directory is assumed to be /usr/bin/miniconda/bin and the '
-             '$AZ_BATCH_NODE_MOUNTS_DIR is a default environment variable where all mount directories reside. For '
-             'Ubuntu, this location is /mnt/batch/tasks/fsmounts'
+        help="""
+        Name and path of file containing system call(s) to run in task(s) (one 
+        per line). The command(s) must include any environment activation steps,
+        e.g.:
+
+        `source $CONDA/activate /envs/cowbat && assembly_pipeline.py -s 
+        $AZ_BATCH_NODE_MOUNTS_DIR/container-name -r /databases/0.5.0.23`
+
+        Note that the $CONDA directory is assumed to be /usr/bin/miniconda/bin 
+        and the $AZ_BATCH_NODE_MOUNTS_DIR is a default environment variable 
+        where all mount directories reside. For Ubuntu, this location is 
+        /mnt/batch/tasks/fsmounts.
+        """
     )
     parser.add_argument(
         '-s', '--settings',
         metavar='settings',
         required=True,
-        help='Name and path of file with the following Azure credentials: \n'
-             'AZURE_ACCOUNT_NAME=blob storage account name\n'
-             'AZURE_ACCOUNT_KEY=blob storage account key\n'
-             'BATCH_ACCOUNT_NAME=azure batch account name\n'
-             'BATCH_ACCOUNT_URL=azure batch account URL\n'
-             'BATCH_ACCOUNT_KEY=azure batch account key\n'
-             'VM_IMAGE=resource ID of VM image on Azure\n'
-             'VM_CLIENT_ID=user:name extracted from az account list\n'
-             'VM_SECRET=extracted from az vm secret list --name MyVirtualMachine --resource-group MyResourceGroup\n'
-             'VM_TENANT=tenantID extracted from az account list\n'
+        help="""
+        Name and path of file with the following Azure credentials: 
+        AZURE_ACCOUNT_NAME=blob storage account name
+        AZURE_ACCOUNT_KEY=blob storage account key
+        BATCH_ACCOUNT_NAME=azure batch account name
+        BATCH_ACCOUNT_URL=azure batch account URL
+        BATCH_ACCOUNT_KEY=azure batch account key
+        VM_IMAGE=resource ID of VM image on Azure
+        VM_CLIENT_ID=user:name extracted from `az account list`
+        VM_SECRET=extracted from `az vm secret list --name MyVirtualMachine 
+        --resource-group MyResourceGroup`
+        VM_TENANT=tenantID extracted from az account list
+        """
     )
     parser.add_argument(
         '-vm', '--vm_size',
         metavar='vm_size',
         default='Standard_D32s_v3',
-        choices=['Standard_D32s_v3', 'Standard_D16s_v3', 'Standard_D8s_v3', 'Standard_D4ds_v5'],
-        help='Size of VM to use. Default is \'Standard_D32s_v3\''
+        choices=['Standard_D32s_v3', 'Standard_D16s_v3', 'Standard_D8s_v3', 
+                 'Standard_D4ds_v5'],
+        help="""
+        Size of VM to use. Default is 'Standard_D32s_v3'
+        """
     )
     parser.add_argument(
         '-p', '--path',
         metavar='path',
         default=os.getcwd(),
         type=str,
-        help='Name and path of folder into which files from tasks are to be downloaded. If not provided, the '
-             'current working directory will be used'
+        help="""
+        Name and path of folder into which files from tasks are to be 
+        downloaded. If not provided, the current working directory will be used.
+        """
     )
     parser.add_argument(
         '-u', '--upload_folder',
         metavar='upload',
         type=str,
-        help='Path of folder containing files to upload for the analyses.'
+        help="""
+        Path of folder containing files to upload for the analyses.
+        """
     )
 
     input_group = parser.add_mutually_exclusive_group()
@@ -343,63 +363,99 @@ def cli():
         metavar='input_file_pattern',
         action='append',
         nargs='+',
-        help='Pattern to use to specify which file(s)/folder(s) to copy to the container (--container), as well as any '
-             'required folder structure. The wildcard character * can be used to specify multiple files/folders. '
-             'By default, the files will be placed in the root of the container, so you only need to specify the '
-             'destination if the files need to be in a subdirectory. The general format of the argument is: \n '
-             'container_name/file_name destination_folder \n '
-             'e.g. sequence_data/2022-SEQ-1399.fasta sequences <- this file will be placed in the sequences '
-             'subdirectory of the supplied --container \n'
-             'sequence_data/2022-SEQ-1399.fasta  <- this file will be placed in the --container \n'
-             'sequence_data/*.fasta sequences \n <- all the .fasta files from the sequence_date container will be '
-             'copied to the --container \n'
-             'sequence_data/escherichia/ sequences <- all files in the escherichia folder in the sequence_data '
-             'container will be copied to the sequences folder in the --container (note that the trailing slash is '
-             'required) \n'
-             'sequence_data/escherichia/* sequences/verotoxin <- this allows nesting within the destination folder \n'
-             'The -input argument can be provided multiple times '
-             'e.g. -input sequence_data/*.fasta sequences -input targets/verotoxin_targets.fasta targets'
-             'This argument is mutually exclusive with --bulk_input_file_pattern'
+        help="""
+        Pattern to use to specify which file(s)/folder(s) to copy to the 
+        container (--container), as well as any required folder structure. The 
+        wildcard character * can be used to specify multiple files/folders. By 
+        default, the files will be placed in the root of the container, so you 
+        only need to specify the destination if the files need to be in a 
+        subdirectory. 
+        
+        The general format of the argument is: `-input container_name/file_name 
+        destination_folder`. e.g.:
+
+            `-input sequence_data/2022-SEQ-1399.fasta sequences` <- this file 
+            will be placed in the 'sequences' subdirectory of the supplied 
+            --container
+
+            `-input sequence_data/2022-SEQ-1399.fasta`  <- this file will be 
+            placed in the --container
+
+            `-input sequence_data/*.fasta sequences` <- all the .fasta files 
+            from the sequence_data container will be copied to the --container
+            
+            `-input sequence_data/escherichia/ sequences` <- all files in the 
+            'escherichia' folder in the sequence_data container will be copied 
+            to the 'sequences' folder in the --container (note that the 
+            trailing slash is required)
+            
+            `-input sequence_data/escherichia/* sequences/verotoxin` <- 
+            this allows nesting within the destination folder
+        
+        The -input argument can also be provided multiple times. e.g.:
+
+            `-input sequence_data/*.fasta sequences -input 
+            targets/verotoxin_targets.fasta targets`
+
+        This argument is mutually exclusive with --bulk_input_file_pattern.
+        """
     )
     input_group.add_argument(
         '-bulk_input', '--bulk_input_file_pattern',
         metavar='bulk_input_file_pattern',
         type=str,
-        help='Name and path of a text file with the required file(s)/folder(s) to copy to the --container, as well as '
-             'their destination folder. Example arguments are provided in the '
-             '--input_file_pattern option above. This argument is mutually exclusive with --input_file_pattern'
+        help="""
+        Name and path of a text file with the required file(s)/folder(s) to 
+        copy to the --container, as well as their destination folder. Example 
+        arguments are provided in the --input_file_pattern option above. 
+        This argument is mutually exclusive with --input_file_pattern.
+        """
     )
     parser.add_argument(
         '-download', '--download_file_pattern',
         metavar='download_file_pattern',
         action='append',
         nargs='+',
-        help='Pattern to use to specify which file(s)/folder(s) to download from blob storage following successful '
-             'completion of the analyses. Specify a file name e.g. log.txt, or a folder e.g. reports/ <- note the '
-             'trailing slash is mandatory in order for the program to recognise a folder vs a file. This argument can '
-             'be supplied multiple times e.g -download log.txt -download error.txt -download reports/ \n'
-             'Files will be downloaded to the location specified by the -path argument'
+        help="""
+        Pattern to use to specify which file(s)/folder(s) to download from blob 
+        storage following successful completion of the analyses. Specify a 
+        file name, e.g. 'log.txt', or a folder, e.g. 'reports/'. (Note the 
+        trailing slash is mandatory in order for the program to recognise a 
+        folder vs a file.) This argument can be supplied multiple times. e.g 
+        `-download log.txt -download error.txt -download reports` 
+        Files will be downloaded to the location specified by the -path 
+        argument.
+        """
     )
     parser.add_argument(
         '-unique_id', '--unique_id',
         metavar='unique_id',
-        help='Provide an identifier to append to pool/job/task names. By default a random eight-digit hash is added '
-             'to ensure that no collisions occur. However, when this code is called from FoodPort, the primary key '
-             'for the model of the analysis will be used. Using this argument can duplicate this functionality.'
+        help="""
+        Provide an identifier to append to pool/job/task names. By default a 
+        random eight-digit hash is added to ensure that no collisions occur. 
+        However, when this code is called from FoodPort, the primary key for 
+        the model of the analysis will be used. Using this argument can 
+        duplicate this functionality.
+        """
     )
     parser.add_argument(
         '-v', '--verbosity',
         choices=['debug', 'info', 'warning', 'error', 'critical'],
         metavar='VERBOSITY',
         default='warning',
-        help='Set the logging level. Options are debug, info, warning, error, and critical. '
-             'Default is info.'
+        help="""
+        Set the logging level. Options are debug, info, warning, error, and
+        critical. Default is info.
+        """
     )
     parser.add_argument(
         '-no_tidy', '--no_tidy',
         action='store_true',
-        help='Do not automatically delete pools/jobs/tasks when the script errors or completes. Useful for debugging '
-             'VM. PLEASE REMEMBER TO CLEAN EVERYTHING UP MANUALLY'
+        help="""
+        Do not automatically delete pools/jobs/tasks when the script errors or
+        completes. Useful for debugging VM. PLEASE REMEMBER TO CLEAN EVERYTHING
+        UP MANUALLY.
+        """
     )
     arguments = parser.parse_args()
     logging.basicConfig(
