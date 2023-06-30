@@ -14,7 +14,7 @@ conda activate azurebatch
 git clone https://github.com/OLC-LOC-Bioinformatics/AzureBatch.git
 cd AzureBatch/
 # Install the package in dev mode
-pip intall -e .
+pip install -e .
 ```
 
 ## Quick usage
