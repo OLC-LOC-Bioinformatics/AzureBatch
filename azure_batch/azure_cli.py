@@ -232,7 +232,7 @@ class AzureBatch:
             raise
 
         finally:
-            if self.tidy:
+            if not self.no_tidy:
                 logging.warning('Cleaning up pool and job')
                 # Clean up Batch resources
                 batch_client.job.delete(job_id)
@@ -240,7 +240,7 @@ class AzureBatch:
 
     def __init__(self, command_file, vm_size, settings, container, path, upload_folder=None,
                  input_file_pattern=None, bulk_input_file_pattern=None, download_file_pattern=None,
-                 unique_id=None, worker=True, tidy=True):
+                 unique_id=None, worker=True, no_tidy=False):
 
         # Use datetime.datatime to set the current time. Will be used to calculate timeouts
         self.start_time = datetime.datetime.now().replace(microsecond=0)
@@ -271,7 +271,7 @@ class AzureBatch:
         self.vm_size = vm_size
         self.worker = worker
         self.download_file_pattern = download_file_pattern
-        self.tidy = tidy
+        self.no_tidy = no_tidy
 
 
 def cli():
@@ -396,7 +396,7 @@ def cli():
              'Default is info.'
     )
     parser.add_argument(
-        '-t', '--tidy',
+        '-no_tidy', '--no_tidy',
         action='store_true',
         help='Do not automatically delete pools/jobs/tasks when the script errors or completes. Useful for debugging '
              'VM. PLEASE REMEMBER TO CLEAN EVERYTHING UP MANUALLY'
@@ -425,7 +425,7 @@ def cli():
         download_file_pattern=arguments.download_file_pattern,
         unique_id=arguments.unique_id,
         worker=False,
-        tidy=arguments.tidy
+        no_tidy=arguments.no_tidy
     )
     azure_batch.main()
     raise SystemExit
