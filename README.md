@@ -1,6 +1,6 @@
 # AzureBatch
 
-AzureBatch is a Python package for creating batch VMs based upon previously created images for ad-hoc bioinformatics analysis at OLC.
+AzureBatch is a Python package for creating batch VMs based upon previously created images for *ad hoc* bioinformatics analysis at OLC.
 
 ## Installation
 
