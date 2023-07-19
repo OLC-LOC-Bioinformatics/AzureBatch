@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 
+"""
+Methods to upload files as required, create and delete pools, jobs, and tasks, and, finally,
+download files for Azure batch analyses
+"""
+
 # Standard imports
 import datetime
 from glob import glob
@@ -9,7 +14,7 @@ from pathlib import Path
 import re
 import sys
 import time
-from tqdm import tqdm
+
 
 # Third party imports
 from azure.batch import BatchServiceClient
@@ -31,6 +36,7 @@ from azure_storage.azure_move import AzureMove
 from azure_storage.methods import (
     create_container_client
 )
+from tqdm import tqdm
 
 __author__ = 'adamkoziol'
 
@@ -41,6 +47,9 @@ class TqdmUpTo(tqdm):
     """
 
     def update_to(self, response):
+        """
+        Find total uploaded and total filesize to be used in progress bar
+        """
         current = response.context['upload_stream_current']  # There's also a 'download_stream_current'
         total = response.context['data_stream_total']
         if total is not None:
