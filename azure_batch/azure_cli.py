@@ -60,8 +60,14 @@ __author__ = 'adamkoziol'
 
 
 class AzureBatch:
+    """
+    Upload files, create and delete pools, jobs, and tasks as required for Azure batch analyses
+    """
 
     def main(self):
+        """
+        Run the necessary functions for AzureBatch
+        """
         # Use the blob client to create the container in Azure Storage if it doesn't yet exist.
         try:
             self.blob_service_client.create_container(self.container)
@@ -70,7 +76,7 @@ class AzureBatch:
 
         # Collect the input files to be analysed.
         if self.upload_folder:
-            logging.warning(f'Uploading files to {self.container}')
+            logging.warning('Uploading files to %s', self.container)
             upload_prep(
                 upload_folder=self.upload_folder,
                 blob_service_client=self.blob_service_client,
@@ -111,7 +117,7 @@ class AzureBatch:
                 container=self.container
             )
             # Copy all necessary files to the container
-            logging.warning(f'Copying files to {self.container}')
+            logging.warning('Copying files to %s', self.container)
             copy_blobs_to_container(
                 container_name=self.container,
                 resource_files_with_output=resource_files_with_output,
@@ -135,7 +141,7 @@ class AzureBatch:
         # If a unique ID was not provided, create an eight-digit hex to be used in creating pools/jobs/tasks
         if not self.unique_id:
             self.unique_id = uuid.uuid4().hex[:8]
-            logging.warning(f'Using {self.unique_id} as the unique identifier')
+            logging.warning('Using %s as the unique identifier', self.unique_id)
         # Create variables to store the names for the pool, job, and task
         pool_id = f'{self.container}-{self.unique_id}-pool'
         job_id = f'{self.container}-{self.unique_id}-job'
@@ -144,7 +150,7 @@ class AzureBatch:
         task_count = 0
         try:
             # Create the pool that will contain compute nodes to perform the analyses
-            logging.warning(f'Creating pool {pool_id}')
+            logging.warning('Creating pool %s', pool_id)
             create_pool(
                 batch_service_client=batch_client,
                 pool_id=pool_id,
@@ -154,7 +160,7 @@ class AzureBatch:
                 mount_path=self.container
             )
             # Create the job that will run the tasks.
-            logging.warning(f'Creating job {job_id} in pool {pool_id}')
+            logging.warning('Creating job %s in pool %s', job_id, pool_id)
             create_job(
                 batch_service_client=batch_client,
                 job_id=job_id,
@@ -225,22 +231,25 @@ class AzureBatch:
             # Print out some timing info
             end_time = datetime.datetime.now().replace(microsecond=0)
             elapsed_time = end_time - self.start_time
-            logging.warning('Elapsed time: {elapsed_time}'.format(elapsed_time=elapsed_time))
+            logging.warning('Elapsed time: %s', elapsed_time)
 
         except batchmodels.BatchErrorException as err:
             print_batch_exception(err)
             raise
 
         finally:
-            if self.tidy:
-                logging.warning('Cleaning up pool and job')
-                # Clean up Batch resources
-                batch_client.job.delete(job_id)
-                batch_client.pool.delete(pool_id)
+            if self.no_tidy:
+                raise SystemExit
+            if self.worker:
+                raise SystemExit
+            logging.warning('Cleaning up pool and job')
+            # Clean up Batch resources
+            batch_client.job.delete(job_id)
+            batch_client.pool.delete(pool_id)
 
     def __init__(self, command_file, vm_size, settings, container, path, upload_folder=None,
                  input_file_pattern=None, bulk_input_file_pattern=None, download_file_pattern=None,
-                 unique_id=None, worker=True, tidy=True):
+                 unique_id=None, worker=True, no_tidy=False):
 
         # Use datetime.datatime to set the current time. Will be used to calculate timeouts
         self.start_time = datetime.datetime.now().replace(microsecond=0)
@@ -262,7 +271,7 @@ class AzureBatch:
         self.container = validate_container_name(
             container_name=container
         )
-        logging.warning(f'Container name {self.container} is valid')
+        logging.warning('Container name %s is valid', self.container)
         self.upload_folder = upload_folder
         self.input_file_pattern = input_file_pattern
         self.bulk_input_file_pattern = bulk_input_file_pattern
@@ -271,7 +280,7 @@ class AzureBatch:
         self.vm_size = vm_size
         self.worker = worker
         self.download_file_pattern = download_file_pattern
-        self.tidy = tidy
+        self.no_tidy = no_tidy
 
 
 def cli():
@@ -396,7 +405,7 @@ def cli():
              'Default is info.'
     )
     parser.add_argument(
-        '-t', '--tidy',
+        '-n', '--no_tidy',
         action='store_true',
         help='Do not automatically delete pools/jobs/tasks when the script errors or completes. Useful for debugging '
              'VM. PLEASE REMEMBER TO CLEAN EVERYTHING UP MANUALLY'
@@ -425,7 +434,7 @@ def cli():
         download_file_pattern=arguments.download_file_pattern,
         unique_id=arguments.unique_id,
         worker=False,
-        tidy=arguments.tidy
+        no_tidy=arguments.no_tidy
     )
     azure_batch.main()
     raise SystemExit
