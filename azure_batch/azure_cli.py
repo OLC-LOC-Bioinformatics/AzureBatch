@@ -29,7 +29,10 @@ from azure.storage.blob import (
 from azure_storage.methods import (
     validate_container_name
 )
-from dotenv import load_dotenv, dotenv_values
+from dotenv import (
+    dotenv_values,
+    load_dotenv
+)
 
 from azure_batch.methods import (
     add_tasks,
