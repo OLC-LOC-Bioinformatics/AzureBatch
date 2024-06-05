@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 """
-Methods to upload files as required, create and delete pools, jobs, and tasks, and, finally,
-download files for Azure batch analyses
+Methods to upload files as required, create and delete pools, jobs, and
+tasks, and, finally, download files for Azure batch analyses
 """
 
 # Standard imports
@@ -43,14 +43,30 @@ __author__ = 'adamkoziol'
 
 class TqdmUpTo(tqdm):
     """
-    Provides `update_to(n)` which uses `tqdm.update(delta_n)`.
+    A subclass of tqdm providing an `update_to` method.
+
+    The `update_to` method is used with the progress of an upload or download,
+    where the total size and the currently transferred size are known.
+
+    Attributes:
+        total (int): The total size of the operation, set by `update_to`.
     """
 
     def update_to(self, response):
         """
-        Find total uploaded and total filesize to be used in progress bar
+        Updates the progress bar based on 'upload_stream_current' and
+        'data_stream_total' values in the context of the given response.
+
+        Args:
+            response (Response): The response object that includes the context
+                with 'upload_stream_current' and 'data_stream_total' values.
+
+        Returns:
+            int: The difference between the current transferred size and the
+                previously transferred size. This is passed to `tqdm.update`.
         """
-        current = response.context['upload_stream_current']  # There's also a 'download_stream_current'
+        # There's also a 'download_stream_current'
+        current = response.context['upload_stream_current']
         total = response.context['data_stream_total']
         if total is not None:
             self.total = total
@@ -59,16 +75,64 @@ class TqdmUpTo(tqdm):
 
 
 class Settings:
-    def __init__(self, settings):
-        self.AZURE_ACCOUNT_NAME = settings['AZURE_ACCOUNT_NAME']
-        self.AZURE_ACCOUNT_KEY = settings['AZURE_ACCOUNT_KEY']
-        self.BATCH_ACCOUNT_NAME = settings['BATCH_ACCOUNT_NAME']
-        self.BATCH_ACCOUNT_URL = settings['BATCH_ACCOUNT_URL']
-        self.BATCH_ACCOUNT_KEY = settings['BATCH_ACCOUNT_KEY']
-        self.VM_IMAGE = settings['VM_IMAGE']
-        self.VM_CLIENT_ID = settings['VM_CLIENT_ID']
-        self.VM_SECRET = settings['VM_SECRET']
-        self.VM_TENANT = settings['VM_TENANT']
+    """
+    A class used to represent the settings for Azure and Batch accounts.
+
+    ...
+
+    Attributes
+    ----------
+    azure_account_name : str
+        The name of the Azure account.
+    azure_account_key : str
+        The key for the Azure account.
+    batch_account_url : str
+        The URL for the Batch account.
+    batch_account_subnet : str
+        The subnet for the Batch account.
+    vm_image : str
+        The image for the Virtual Machine, depends on the analysis type.
+    node_agent_sku_id : str
+        The SKU ID for the node agent, depends on the analysis type.
+    vm_secret : str
+        The secret for the Virtual Machine.
+    vm_tenant : str
+        The tenant for the Virtual Machine.
+
+    Methods
+    -------
+    __init__(self, settings: dict, analysis_type: str) -> None:
+        Initializes the Settings object with the provided settings.
+    """
+
+    def __init__(self, settings, analysis_type):
+        """
+        Initializes the Settings object with the provided settings.
+
+        Parameters
+        ----------
+        settings : dict
+            A dictionary containing the settings for Azure and Batch accounts.
+        analysis_type : str
+            The type of analysis to be performed. This determines the VM
+            image and node agent SKU ID.
+        """
+        self.azure_account_name = settings['AZURE_ACCOUNT_NAME']
+        self.azure_account_key = settings['AZURE_ACCOUNT_KEY']
+        self.batch_account_url = settings['BATCH_ACCOUNT_URL']
+        self.batch_account_subnet = settings['BATCH_ACCOUNT_SUBNET']
+        if analysis_type == 'COWBAT':
+            self.vm_image = settings['VM_IMAGE']
+            self.node_agent_sku_id = 'batch.node.ubuntu 20.04'
+        elif analysis_type == 'AmpliSeq':
+            self.vm_image = settings['AMPLISEQ_IMAGE']
+            self.node_agent_sku_id = 'batch.node.ubuntu 20.04'
+        elif analysis_type == 'COWSNPhR':
+            self.vm_image = settings['COWSNPHR_IMAGE']
+            self.node_agent_sku_id = 'batch.node.ubuntu 22.04'
+        self.vm_secret = settings['VM_SECRET']
+        self.vm_tenant = settings['VM_TENANT']
+        self.vm_client_id = settings['VM_CLIENT_ID']
 
 
 def print_batch_exception(
@@ -101,20 +165,31 @@ def upload_file_to_container(
     :param blob_storage_service_client: A blob service client.
     :param str container_name: The name of the Azure Blob storage container.
     :param str file_path: The local path to the file.
-    :param str upload_folder: User-supplied name and path of folder containing files to upload
-    :param bool overwrite: Boolean of whether previous blobs will be overwritten. Default is False
+    :param str upload_folder: User-supplied name and path of folder containing
+    files to upload
+    :param bool overwrite: Boolean of whether previous blobs will be
+    overwritten. Default is False
     """
-    # Calculate the relative path between the file_path and the upload folder e.g. tests/files/test.txt with upload
-    # folder tests/files/ will yield tests.txt, while tests/files/uploads/test.txt will yield uploads/test.txt
+    # Calculate the relative path between the file_path and the upload folder
+    # e.g. tests/files/test.txt with upload folder tests/files/ will yield
+    # tests.txt, while tests/files/uploads/test.txt will yield uploads/test.txt
     blob_name = str(Path(file_path).relative_to(upload_folder))
 
     # Create a blob client for the blob in the container
-    blob_client = blob_storage_service_client.get_blob_client(container_name, blob_name)
+    blob_client = blob_storage_service_client.get_blob_client(
+        container_name,
+        blob_name
+    )
 
     # Upload the file to storage. Don't overwrite any previous versions
     try:
         # Progress bar with upload
-        with TqdmUpTo(unit='B', unit_scale=True, unit_divisor=1024, miniters=1, desc=blob_name) as t:
+        with TqdmUpTo(
+                unit='B',
+                unit_scale=True,
+                unit_divisor=1024,
+                miniters=1,
+                desc=blob_name) as t:
             with open(file_path, "rb") as data:
                 blob_client.upload_blob(
                     data,
@@ -123,9 +198,9 @@ def upload_file_to_container(
                     connection_timeout=1200
                     )
             t.total = t.n
-        logging.warning(f"File '{blob_name}' successfully uploaded.")
+        logging.warning("File '%s' successfully uploaded.", blob_name)
     except ResourceExistsError:
-        logging.warning(f"File '{blob_name}' already exists. Skipping...")
+        logging.warning("File '%s' already exists. Skipping...", blob_name)
 
 
 def generate_sas_url(
@@ -140,14 +215,20 @@ def generate_sas_url(
     :param str account_domain: Domain of Azure storage account
     :param str container_name: Name of Azure storage container
     :param str blob_name: Name of blob in Azure storage container
-    :param str sas_token: SAS token created by azure.storage.blob.generate_blob_sas
+    :param str sas_token: SAS token created by
+    azure.storage.blob.generate_blob_sas
     :return str: Formatted SAS URL
     """
     # Create the SAS URL using the supplied variables
     if blob_name:
-        return f'https://{account_name}.{account_domain}/{container_name}/{blob_name}?{sas_token}'
-    else:
-        return f'https://{account_name}.{account_domain}/{container_name}?{sas_token}'
+        return (
+            f'https://{account_name}.{account_domain}/'
+            f'{container_name}/{blob_name}?{sas_token}'
+        )
+    return (
+        f'https://{account_name}.{account_domain}/'
+        f'{container_name}?{sas_token}'
+    )
 
 
 def create_pool(
@@ -163,8 +244,10 @@ def create_pool(
     :param str pool_id: An ID for the new pool
     :param str vm_size: The size of the VM to use.
     :param str container_name: The name of the Azure Blob storage container.
-    :param str mount_path: The relative path the container will be mounted in the VM. $AZ_BATCH_NODE_MOUNTS_DIR is where
-    all mount directories reside, so the relative path is the folder to use in that directory
+    :param str mount_path: The relative path the container will be mounted in
+    the VM. $AZ_BATCH_NODE_MOUNTS_DIR is where
+    all mount directories reside, so the relative path is the folder to use
+    in that directory
     :param Settings settings: Class containing environment variables
     """
     # Create a new pool of Linux compute nodes
@@ -172,20 +255,37 @@ def create_pool(
         id=pool_id,
         virtual_machine_configuration=batchmodels.VirtualMachineConfiguration(
             image_reference=batchmodels.ImageReference(
-                virtual_machine_image_id=settings.VM_IMAGE,
+                virtual_machine_image_id=settings.vm_image,
             ),
-            node_agent_sku_id="batch.node.ubuntu 20.04"),
+            node_agent_sku_id=settings.node_agent_sku_id),
         vm_size=vm_size,
-        target_dedicated_nodes=1,
-        mount_configuration=[batchmodels.MountConfiguration(
-            azure_blob_file_system_configuration=batchmodels.AzureBlobFileSystemConfiguration(
-                account_name=settings.AZURE_ACCOUNT_NAME,
-                account_key=settings.AZURE_ACCOUNT_KEY,
-                container_name=container_name,
-                relative_mount_path=mount_path,
-                blobfuse_options='-o attr_timeout=240 -o entry_timeout=240 -o negative_timeout=120 '
+        network_configuration=batchmodels.NetworkConfiguration(
+            subnet_id=settings.batch_account_subnet,
+            public_ip_address_configuration=batchmodels.
+            PublicIPAddressConfiguration(
+                # provision=batchmodels.PublicIPAddressProvisioningType.
+                # no_public_ip_addresses
+                provision='noPublicIPAddresses'
             )
-        )]
+        ),
+        target_dedicated_nodes=1,
+        mount_configuration=[
+            batchmodels.MountConfiguration(
+                azure_blob_file_system_configuration=(
+                    batchmodels.AzureBlobFileSystemConfiguration(
+                        account_name=settings.azure_account_name,
+                        account_key=settings.azure_account_key,
+                        container_name=container_name,
+                        relative_mount_path=mount_path,
+                        blobfuse_options=(
+                            '-o attr_timeout=240 '
+                            '-o entry_timeout=240 '
+                            '-o negative_timeout=120 '
+                        )
+                    )
+                )
+            )
+        ]
     )
     batch_service_client.pool.add(new_pool)
 
@@ -218,7 +318,8 @@ def add_tasks(
     Adds a task for each input file in the collection to the specified job.
     :param str task_id: Unique ID for the task
     :param list tasks: List of tasks to perform
-    :param list resource_input_files: A collection of input files to add to the task
+    :param list resource_input_files: A collection of input files to add to
+    the task
     :param list resource_output_files: List of azure.batch.models.OutputFiles
     :param str sys_call: The system call to perform
     :return list tasks: Task list with appended task
@@ -227,10 +328,12 @@ def add_tasks(
     # Give a sixteen-hour timeout for the task
     # https://docs.microsoft.com/en-us/python/api/azure-batch/azure.batch.models.taskconstraints?view=azure-python
     task_constraints = batchmodels.TaskConstraints(max_wall_clock_time="PT16H")
-    # Since the system command does not run under a shell, prepend /bin/bash -c to the command to allow for environment
+    # Since the system command does not run under a shell, prepend /bin/bash
+    # -c to the command to allow for environment
     # variable expansion
     command = f'/bin/bash -c \"{sys_call}\"'
-    # Run the task as an auto-user with elevated access. Necessary for using blobfuse filesystems
+    # Run the task as an auto-user with elevated access. Necessary for using
+    # blobfuse filesystems
     # https://learn.microsoft.com/en-us/azure/batch/batch-user-accounts#run-a-task-as-an-auto-user-with-elevated-access
     user = batchmodels.UserIdentity(
         auto_user=batchmodels.AutoUserSpecification(
@@ -244,8 +347,12 @@ def add_tasks(
         resource_files=resource_input_files,
         output_files=resource_output_files,
         user_identity=user,
-        environment_settings=[batchmodels.EnvironmentSetting(name='CONDA', value='/usr/bin/miniconda/bin'), ]
-        )
+        environment_settings=[
+            batchmodels.EnvironmentSetting(
+                name='CONDA',
+                value='/usr/bin/miniconda/bin'
+            ),
+        ])
     )
     return tasks
 
@@ -255,26 +362,31 @@ def prep_output_container(
         settings: Settings,
         blob_storage_service_client: BlobServiceClient) -> str:
     """
-    Create the container to receive files following task completion/success. Create a SAS URL for the container in order
-    to initialise batchmodels.OutputFile objects
-    :param str output_container_name: Name of container in Azure storage into which output files are to be uploaded
+    Create the container to receive files following task completion/success.
+    Create a SAS URL for the container in order to initialise
+    batchmodels.OutputFile objects
+    :param str output_container_name: Name of container in Azure storage into
+    which output files are to be uploaded
     :param Settings settings: Class containing environment variables
     :param BlobServiceClient blob_storage_service_client: BlobServiceClient
     :return str sas_url: SAS URL of output container
     """
     try:
-        blob_storage_service_client.create_container(name=output_container_name)
+        blob_storage_service_client.create_container(
+            name=output_container_name
+        )
     except ResourceExistsError:
         pass
     sas_token = generate_container_sas(
-        account_name=settings.AZURE_ACCOUNT_NAME,
+        account_name=settings.azure_account_name,
         container_name=output_container_name,
-        account_key=settings.AZURE_ACCOUNT_KEY,
+        account_key=settings.azure_account_key,
         permission=AccountSasPermissions(read=True, write=True),
-        expiry=datetime.datetime.utcnow() + datetime.timedelta(hours=24)
+        expiry=datetime.datetime.now(datetime.timezone.utc) +
+        datetime.timedelta(hours=24)
     )
     sas_url = generate_sas_url(
-        account_name=settings.AZURE_ACCOUNT_NAME,
+        account_name=settings.azure_account_name,
         account_domain='blob.core.windows.net',
         container_name=output_container_name,
         blob_name=str(),
@@ -290,50 +402,67 @@ def prepare_output_resource_files(
         settings: Settings,
         output_container_name: str) -> list:
     """
-    Create batchmodels.OutputFile object(s) for desired file/folder to be uploaded following task success
+    Create batchmodels.OutputFile object(s) for desired file/folder to be
+    uploaded following task success
     :param BlobServiceClient blob_storage_service_client: BlobServiceClient
     :param str output_item: Name of file/folder to upload
-    :param list output_files: List of batchmodels.OutputFile objects for files to be uploaded
+    :param list output_files: List of batchmodels.OutputFile objects for
+    files to be uploaded
     :param Settings settings: Class containing environment variables
-    :param str output_container_name: Name of container in Azure storage into which output files are to be uploaded
+    :param str output_container_name: Name of container in Azure storage into
+    which output files are to be uploaded
     :return list output_files: Populated with batchmodels.OutputFile objects
     """
-    # Create the output container (if necessary), and create a SAS URL for the container
+    # Create the output container (if necessary), and create a SAS URL
+    # for the container
     sas_url = prep_output_container(
         output_container_name=output_container_name,
         settings=settings,
         blob_storage_service_client=blob_storage_service_client
     )
-    # If the output_item ends with a /, it is a folder, so it needs to be processed recursively
+    # If the output_item ends with a /, it is a folder, so it needs to be
+    # processed recursively
     if output_item.endswith('/'):
-        # If all files and folders are to be retrieved, the output_item is a /. Remove the / to not confuse the patterns
+        # If all files and folders are to be retrieved, the output_item is
+        # a /. Remove the / to not confuse the patterns
         output_item = output_item if output_item != '/' else ''
         # Create a batchmodels.OutputFile object
         output_files.append(batchmodels.OutputFile(
-            file_pattern=output_item + '*',  # Match all files
-            destination=batchmodels.OutputFileDestination(  # Set the file output destination
-                container=batchmodels.OutputFileBlobContainerDestination(  # Set the container output details
+            # Match all files
+            file_pattern=output_item + '*',
+            # Set the file output destination
+            destination=batchmodels.OutputFileDestination(
+                # Set the container output details
+                container=batchmodels.OutputFileBlobContainerDestination(
                     container_url=sas_url,
                     path=os.path.split(output_item)[0]
                 )
             ),
             # Upload the file when the task is successful
             upload_options=batchmodels.OutputFileUploadOptions(
-                upload_condition=batchmodels.OutputFileUploadCondition.task_success
+                upload_condition=(
+                    batchmodels.OutputFileUploadCondition.task_success
+                )
             )
         ))
         output_files.append(batchmodels.OutputFile(
-            file_pattern=os.path.join(output_item, '**', '*'),  # ** specifies any folder
+            # ** specifies any folder
+            file_pattern=os.path.join(output_item, '**', '*'),
             destination=batchmodels.OutputFileDestination(
                 container=batchmodels.OutputFileBlobContainerDestination(
                     container_url=sas_url,
-                    path=os.path.split(output_item)[0].replace('**', '')  # remove the ** prepended to the file name
+                    # Remove the ** prepended to the file name
+                    path=os.path.split(output_item)[0].replace('**', '')
                 )
             ),
             upload_options=batchmodels.OutputFileUploadOptions(
-                upload_condition=batchmodels.OutputFileUploadCondition.task_success
-            )))
-    # Otherwise, a single batchmodels.Output object is created for the specified file
+                upload_condition=(
+                    batchmodels.OutputFileUploadCondition.task_success
+                )
+            )
+        ))
+    # Otherwise, a single batchmodels.Output object is created for the
+    # specified file
     else:
         output_files.append(batchmodels.OutputFile(
             file_pattern=output_item,
@@ -342,8 +471,11 @@ def prepare_output_resource_files(
                     container_url=sas_url,
                     path=os.path.split(output_item)[0])),
             upload_options=batchmodels.OutputFileUploadOptions(
-                upload_condition=batchmodels.OutputFileUploadCondition.task_success
-            )))
+                upload_condition=(
+                    batchmodels.OutputFileUploadCondition.task_success
+                )
+            )
+        ))
 
     return output_files
 
@@ -354,21 +486,26 @@ def log_output_resource_files(
         settings: Settings,
         output_container_name: str) -> list:
     """
-    Create batchmodels.OutputFile object(s) for log files following task completion
+    Create batchmodels.OutputFile object(s) for log files following
+    task completion
     :param BlobServiceClient blob_storage_service_client: BlobServiceClient
-    :param list output_files: List of batchmodels.OutputFile objects for files to be uploaded
+    :param list output_files: List of batchmodels.OutputFile objects for files
+    to be uploaded
     :param Settings settings: Class containing environment variables
-    :param str output_container_name: Name of container in Azure storage into which output files are to be uploaded
+    :param str output_container_name: Name of container in Azure storage into
+    which output files are to be uploaded
     :return list output_files: Populated with batchmodels.OutputFile objects
     """
-    # Create the output container (if necessary), and create a SAS URL for the container
+    # Create the output container (if necessary), and create a SAS URL for
+    # the container
     sas_url = prep_output_container(
         output_container_name=output_container_name,
         settings=settings,
         blob_storage_service_client=blob_storage_service_client
     )
 
-    # Add stdout and stderr.txt log files to the Azure container. This is done even if task isn't successful
+    # Add stdout and stderr.txt log files to the Azure container. This is
+    # done even if task isn't successful
     output_files.append(
         batchmodels.OutputFile(
             file_pattern=os.path.join('$AZ_BATCH_TASK_DIR', 'stderr.txt'),
@@ -379,7 +516,9 @@ def log_output_resource_files(
                 )
             ),
             upload_options=batchmodels.OutputFileUploadOptions(
-                upload_condition=batchmodels.OutputFileUploadCondition.task_completion
+                upload_condition=(
+                    batchmodels.OutputFileUploadCondition.task_completion
+                )
             )
         )
     )
@@ -393,7 +532,9 @@ def log_output_resource_files(
                 )
             ),
             upload_options=batchmodels.OutputFileUploadOptions(
-                upload_condition=batchmodels.OutputFileUploadCondition.task_completion
+                upload_condition=(
+                    batchmodels.OutputFileUploadCondition.task_completion
+                )
             )
         )
     )
@@ -408,13 +549,17 @@ def wait_for_tasks_to_complete(
     Returns when all tasks in the specified job reach the Completed state.
     :param batch_service_client: A Batch service client.
     :param job_id: The id of the job whose tasks should be monitored.
-    :param timeout: The duration to wait for task completion. If all tasks in the specified job do not reach
-    Completed state within this time period, an exception will be raised.
+    :param timeout: The duration to wait for task completion. If all tasks in
+    the specified job do not reach Completed state within this time period,
+    an exception will be raised.
     """
     # Set the timeout
     timeout_expiration = datetime.datetime.now() + timeout
 
-    logging.warning(f"Monitoring all tasks for 'Completed' state, timeout in {timeout}...")
+    logging.warning(
+        "Monitoring all tasks for 'Completed' state, timeout in %s...",
+        timeout
+    )
 
     # While the current time is under the timeout, allow the tasks to proceed
     while datetime.datetime.now() < timeout_expiration:
@@ -425,7 +570,10 @@ def wait_for_tasks_to_complete(
         # Get a list of all the tasks for the job
         tasks = batch_service_client.task.list(job_id)
         # Create a list of all tasks that are not in the 'Completed' state
-        incomplete_tasks = [task for task in tasks if task.state != batchmodels.TaskState.completed]
+        incomplete_tasks = [
+            task for task in tasks if task.state !=
+            batchmodels.TaskState.completed
+        ]
         # If all the tasks are complete, break the while loop
         if not incomplete_tasks:
             # Print an empty line to exit the line of dots
@@ -436,7 +584,10 @@ def wait_for_tasks_to_complete(
     # Print an empty line to exit the line of dots
     print()
     # Raise a RuntimeError if the tasks take too long
-    raise RuntimeError("ERROR: Tasks did not reach 'Completed' state within timeout period of " + str(timeout))
+    raise RuntimeError(
+        "ERROR: Tasks did not reach 'Completed' state within timeout "
+        "period of " + str(timeout)
+    )
 
 
 def upload_prep(
@@ -444,20 +595,30 @@ def upload_prep(
         blob_service_client: BlobServiceClient,
         container: str):
     """
-    Assert that the user-supplied upload folder exists, find all files in that folder, and upload them to blob storage
-    :param str upload_folder: User-supplied name and path of folder containing files to upload
+    Assert that the user-supplied upload folder exists, find all files in that
+    folder, and upload them to blob storage
+    :param str upload_folder: User-supplied name and path of folder
+    containing files to upload
     :param blob_service_client: BlobServiceClient
-    :param str container: User-supplied name of container to which files are to be uploaded
+    :param str container: User-supplied name of container to which files are
+    to be uploaded
     """
     # Assert that the supplied upload folder exists
     try:
         assert os.path.isdir(upload_folder)
     except AssertionError as exc:
-        logging.error(f'Could not located the supplied folder containing files to upload: {upload_folder}')
+        logging.error(
+            "Could not locate the supplied folder containing files to upload: "
+            "%s", upload_folder
+        )
         raise SystemExit from exc
 
     # Use glob recursively to find all the files in the supplied upload folder
-    input_file_paths = sorted(glob(os.path.join(upload_folder, '**', '*'), recursive=True))
+    input_file_paths = sorted(
+        glob(
+            os.path.join(upload_folder, '**', '*'), recursive=True
+        )
+    )
 
     logging.debug(input_file_paths)
 
@@ -478,14 +639,18 @@ def upload_prep(
 def read_bulk_input_pattern(bulk_input_file_pattern: str) -> list:
     """
     Read the supplied file of input file patterns into a list
-    :param str bulk_input_file_pattern: Name and path of a file containing resource file input patterns
+    :param str bulk_input_file_pattern: Name and path of a file containing
+    resource file input patterns
     :return: list file_patterns: File patterns extracted from file
     """
     # Ensure that the file actually exists
     try:
         assert os.path.isfile(bulk_input_file_pattern)
     except AssertionError as exc:
-        logging.error(f'Could not locate file containing bulk input file patterns: {bulk_input_file_pattern}')
+        logging.error(
+            "Could not locate file containing bulk input file patterns: %s",
+            bulk_input_file_pattern
+        )
         raise SystemExit from exc
 
     # Create a list to store the parsed patterns
@@ -502,23 +667,29 @@ def read_bulk_input_pattern(bulk_input_file_pattern: str) -> list:
 def parse_resource_input_pattern(
         input_file_pattern: list) -> list:
     """
-    Ensure that the resource file patterns have the correct format. Add the container name to the path in the VM
-    :param list input_file_pattern: List of lists of [file pattern, destination] or [file pattern]
-    :return: list input_file_pattern_paths: input_file_pattern modified to include container name
+    Ensure that the resource file patterns have the correct format. Add the
+    container name to the path in the VM
+    :param list input_file_pattern: List of lists of [file pattern,
+    destination] or [file pattern]
+    :return: list input_file_pattern_paths: input_file_pattern modified to
+    include container name
     """
     # Initialise lists to store modified pattern lists and errors
     input_file_pattern_paths = []
     errors = []
     for input_pattern in input_file_pattern:
-        # If the length of the pattern is one, the output folder has not been specified
+        # If the length of the pattern is one, the output folder has not
+        # been specified
         if len(input_pattern) == 1:
-            # Add the container name to the destination, as the working directory will be named after the container
+            # Add the container name to the destination, as the working
+            # directory will be named after the container
             input_pattern.append('')
         # If the length is two, the destination folder has been provided
         elif len(input_pattern) == 2:
             # Update the destination folder with the container name
             input_pattern[1] = os.path.join(input_pattern[1], '')
-        # A different length indicates that the argument was provided incorrectly
+        # A different length indicates that the argument was
+        # provided incorrectly
         else:
             errors.append(' ' .join(input_pattern))
             continue
@@ -526,7 +697,10 @@ def parse_resource_input_pattern(
         input_file_pattern_paths.append(input_pattern)
     # If there were errors with the supplied patterns, tell the user, and quit
     if errors:
-        logging.error('The following file input pattern(s) are not formatted correctly: %s', ', '.join(errors))
+        logging.error(
+            'The following file input pattern(s) are not formatted '
+            'correctly: %s', ', '.join(errors)
+        )
         raise SystemExit
     return input_file_pattern_paths
 
@@ -536,23 +710,30 @@ def prep_resource_files(
         blob_service_client: BlobServiceClient,
         resource_file_list: str):
     """
-    Parse the supplied resource file patterns, and write all the files matched by those pattern to a local file
+    Parse the supplied resource file patterns, and write all the files
+    matched by those pattern to a local file
     :param list input_file_pattern:
     :param blob_service_client: BlobServiceClient
-    :param str resource_file_list: Name and path of file to which the matches to the provided expressions are to be
+    :param str resource_file_list: Name and path of file to which the matches
+    to the provided expressions are to be
     written
     """
     # Create a list to store any patterns that did not return any files
     missing_patterns = []
     # Iterate over all the input patterns
     for pattern_destination in input_file_pattern:
-        # The pattern_destination consists of a list of [file pattern, file destination]. We only want the pattern
+        # The pattern_destination consists of a list of [file pattern, file
+        # destination]. We only want the pattern
         container_expression = pattern_destination[0]
-        # The container_expression consists of a path with container_name/expression. Extract the container name
+        # The container_expression consists of a path with
+        # container_name/expression. Extract the container name
         container_name = str(Path(container_expression).parts[0])
         # Extract the path of the file from the container name
-        expression = str(Path(container_expression).relative_to(container_name))
-        # If a folder was supplied, add an asterisk to target all files in that folder
+        expression = str(
+            Path(container_expression).relative_to(container_name)
+        )
+        # If a folder was supplied, add an asterisk to target all files
+        # in that folder
         if expression.endswith('/'):
             expression += '*'
         # Create a container client
@@ -561,13 +742,14 @@ def prep_resource_files(
             container_name=container_name,
             create=False
         )
-        # Calculate size of output file before listing files for the current pattern
+        # Calculate size of output file before listing files for the
+        # current pattern
         try:
             file_size = os.path.getsize(resource_file_list)
         except FileNotFoundError:
             file_size = 0
         # Suppress the print statements from AzureList
-        sys.stdout = open(os.devnull, 'w')
+        sys.stdout = open(os.devnull, 'w', encoding='utf-8')
         # Write all files matching the expression to a local file
         try:
             AzureList.list_files(
@@ -577,35 +759,46 @@ def prep_resource_files(
                 container_name=container_name
             )
         except ResourceNotFoundError:
-            missing_patterns.append([container_name, 'container does not exist'])
+            missing_patterns.append(
+                [container_name, 'container does not exist']
+            )
             continue
         # Allow normal printing again
         sys.stdout = sys.__stdout__
-        # Compare the size of the output file to its size before AzureList searched for files
+        # Compare the size of the output file to its size before
+        # AzureList searched for files
         try:
             updated_file_size = os.path.getsize(resource_file_list)
         except FileNotFoundError:
             updated_file_size = 0
         if file_size == updated_file_size:
             missing_patterns.append([container_name, container_expression])
-    # Raise an error if one or more of the file matching patterns returned no files
+    # Raise an error if one or more of the file matching patterns returned
+    # no files
     if missing_patterns:
-        logging.error(f'Could not locate files for the following container: expression combination(s)')
-        for missing_patterns in missing_patterns:
-            logging.error(f'\t{missing_patterns[0]}: {missing_patterns[1]}')
+        logging.error(
+            'Could not locate files for the following container: expression '
+            'combination(s)'
+        )
+        for missing_pattern in missing_patterns:
+            logging.error('\t%s: %s', missing_pattern[0], missing_pattern[1])
         raise SystemExit
 
 
 def parse_resource_file_list(resource_file_list: str) -> list:
     """
     Parse the resource_file_list file, and create a list of all the files
-    :param str resource_file_list: Name and path of file in which the matches to the provided expressions are written
+    :param str resource_file_list: Name and path of file in which the matches
+    to the provided expressions are written
     :return: list resource_files: All files extracted from resource_file_list
     """
     # Create a list to store all the resource files
     resource_files = []
     # Open the file, and read in the lines to a list
-    with open(resource_file_list, 'r', encoding='utf-8') as resource_file_output:
+    with open(
+            resource_file_list,
+            'r',
+            encoding='utf-8') as resource_file_output:
         for line in resource_file_output:
             # Split the line on tabs
             split_line = line.rstrip().split('\t')
@@ -618,7 +811,8 @@ def sas_url_prep(
         container_name: str,
         blob_name: str) -> batchmodels.ResourceFile:
     """
-    Create a SAS token and corresponding SAS URL for a blob in a container in Azure storage
+    Create a SAS token and corresponding SAS URL for a blob in a container
+    in Azure storage
     :param Settings settings: Class containing environment variable
     :param str container_name: The name of the Azure Blob storage container.
     :param str blob_name: The name of the file in blob storage
@@ -626,15 +820,15 @@ def sas_url_prep(
     """
     # Create the SAS token for the container:blob combination
     sas_token = generate_blob_sas(
-        account_name=settings.AZURE_ACCOUNT_NAME,
+        account_name=settings.azure_account_name,
         container_name=container_name,
         blob_name=blob_name,
-        account_key=settings.AZURE_ACCOUNT_KEY,
+        account_key=settings.azure_account_key,
         permission=BlobSasPermissions(read=True),
         expiry=datetime.datetime.utcnow() + datetime.timedelta(hours=24)
     )
     sas_url = generate_sas_url(
-        account_name=settings.AZURE_ACCOUNT_NAME,
+        account_name=settings.azure_account_name,
         account_domain='blob.core.windows.net',
         container_name=container_name,
         blob_name=blob_name,
@@ -651,16 +845,21 @@ def match_file_and_expression(
         input_file_pattern_paths: list,
         container: str) -> list:
     """
-    Match resource files to input file patterns in order to prepare the AzureAutomate batch document that requires
+    Match resource files to input file patterns in order to prepare the
+    AzureAutomate batch document that requires
     the destination folder
     :param list resource_files: Files matched by AzureList
-    :param list input_file_pattern_paths: List of lists of [file pattern, destination]
-    :param str container: Name of container in Azure storage into which files are to be copied
-    :return: list resource_files_with_input: List of lists of [container_name,  resource_file_name, destination]
+    :param list input_file_pattern_paths: List of lists of [file pattern,
+    destination]
+    :param str container: Name of container in Azure storage into which files
+    are to be copied
+    :return: list resource_files_with_input: List of lists of [container_name,
+    resource_file_name, destination]
     """
     # Initialise the list to store the outputs
     resource_files_with_output = []
-    # Iterate over all the input file patterns [container_name/expression, destination]
+    # Iterate over all the input file patterns [container_name/expression,
+    # destination]
     for container_destinations in input_file_pattern_paths:
         # Extract the container_name/expression field
         container_expression = container_destinations[0]
@@ -668,20 +867,28 @@ def match_file_and_expression(
         expression = os.path.basename(container_expression)
         # Replace any * with .* to be compatible with regex matching
         expression = expression.replace('*', '.*')
-        # The destination folder is the second entry in the container_destination list
+        # The destination folder is the second entry in the
+        # container_destination list
         destination = container_destinations[1]
-        # The container_expression consists of a path with container_name/expression. Extract the container name
+        # The container_expression consists of a path with
+        # container_name/expression. Extract the container name
         container_name = str(Path(container_expression).parts[0])
         # Don't copy files already in the container
         if container_name == container:
             continue
         # If a folder has been specified, modify the nesting appropriately
         if container_expression.endswith('/'):
-            # The folder must be included in the nesting if a folder was specified
-            nesting = str(Path(container_expression).relative_to(container_name))
+            # The folder must be included in the nesting if a folder
+            # was specified
+            nesting = str(
+                Path(container_expression).relative_to(container_name)
+            )
         else:
-            # If an expression was provided, remove the folder from the nesting variable
-            nesting = os.path.dirname(str(Path(container_expression).relative_to(container_name)))
+            # If an expression was provided, remove the folder from
+            # the nesting variable
+            nesting = os.path.dirname(
+                str(Path(container_expression).relative_to(container_name))
+            )
 
         # Iterate over all the files matched by AzureList
         for resource_file in resource_files:
@@ -690,32 +897,60 @@ def match_file_and_expression(
             resource_file_name = resource_file[1]
             # Find the directory structure of the file
             resource_nesting = os.path.dirname(resource_file_name)
-            # Determine if the directory structure of the input pattern matches this file
-            # If neither of the options have any nesting i.e. are in the root of the blob/folder, they match
+            # Determine if the directory structure of the input pattern
+            # matches this file. If neither of the options have any nesting
+            # i.e. are in the root of the blob/folder, they match
             if not nesting and not resource_nesting:
                 nesting_match = True
             # Only if variables for both options exist
             elif nesting and resource_nesting:
-                # If the resource file's folder structure is relative to the pattern nesting folder, they are a match
+                # If the resource file's folder structure is relative to the
+                # pattern nesting folder, they are a match
                 try:
                     nesting_match = Path(resource_nesting).relative_to(nesting)
-                # A ValueError indicates that the paths are not relative to each other
+                # A ValueError indicates that the paths are not relative
+                # to each other
                 except ValueError:
                     nesting_match = False
             # Otherwise the match is False
             else:
                 nesting_match = False
-            # Use regex to determine whether the file pattern matches the file name
+            # Use regex to determine whether the file pattern matches
+            # the file name
             expression_match = re.match(expression, resource_file_name)
-            # In order for a file to match the pattern, the container names must match, and both the folder structure
+            # In order for a file to match the pattern, the container names
+            # must match, and both the folder structure
             # and the expressions must match
-            if container_name == resource_container_name and nesting_match and expression_match:
-                # Add the container name, file name, and the destination to the list
-                resource_files_with_output.append([container_name, resource_file_name, destination])
+            if (container_name == resource_container_name
+                    and nesting_match
+                    and expression_match):
+                # Add the container name, file name, and the destination
+                # to the list
+                resource_files_with_output.append(
+                    [container_name, resource_file_name, destination]
+                )
     return resource_files_with_output
 
 
-def copy_blobs_to_container(container_name, resource_files_with_output, settings):
+def copy_blobs_to_container(
+        container_name,
+        resource_files_with_output,
+        settings):
+    """
+    Copies blobs from one Azure storage container to another.
+
+    Parameters:
+    container_name (str): The name of the destination container.
+    resource_files_with_output (list): A list of tuples, where each tuple
+    contains the source container name, the file name, and the
+    destination path.
+    settings (object): An object that contains Azure account settings,
+    including the account name.
+
+    The function iterates over the list of files to be copied. For each file,
+    it creates an instance of the AzureMove class and calls its main method
+    to perform the copy operation.
+    """
     for copy_operation in resource_files_with_output:
         # Rename the components of the list with useful variable names
         source_container = copy_operation[0]
@@ -725,7 +960,7 @@ def copy_blobs_to_container(container_name, resource_files_with_output, settings
         copy_file = AzureMove(
             object_name=file_name,
             container_name=source_container,
-            account_name=settings.AZURE_ACCOUNT_NAME,
+            account_name=settings.azure_account_name,
             target_container=container_name,
             path=destination,
             storage_tier='Hot',
@@ -739,12 +974,16 @@ def copy_blobs_to_container(container_name, resource_files_with_output, settings
 def read_command_file(command_file: str) -> list:
     """
     Read in the supplied command file, and return a string
-    :param str command_file: Name and path of file containing system call to perform on the nodes
+    :param str command_file: Name and path of file containing system call to
+    perform on the nodes
     :return: list sys_call: List of all system calls to perform on the nodes
     """
     # Ensure that the file exists
     if not os.path.isfile(command_file):
-        logging.error(f'Could not located supplied file containing system call to use: {command_file}')
+        logging.error(
+            "Could not locate supplied file containing system call to use: %s",
+            command_file
+        )
         raise SystemExit
     sys_call = []
     # Open the file, read in the commands, and add them to a list
@@ -760,16 +999,17 @@ def download_files(
         path: str,
         settings: Settings):
     """
-    Use AzureDownload to download file(s)/folder(s) created as outputs from tasks
+    Use AzureDownload to download file(s)/folder(s) created as outputs
+    from tasks
     :param str container_name: The name of the Azure Blob storage container.
-    :param list download_file_pattern: List of lists of file(s)/folder(s) to download
-    :param str path: Name and path of folder into which the file(s)/folder(s) are to be downloaded
+    :param list download_file_pattern: List of lists of file(s)/folder(s)
+    to download
+    :param str path: Name and path of folder into which the file(s)/folder(s)
+    are to be downloaded
     :param Settings settings: Class containing environment variables
     """
     # Iterate over all the requested file(s)/folder(s)
     for download_pattern in download_file_pattern:
-        # Prepend the container name to the object name, as the blobs are nested
-        # object_name = os.path.join(container_name, download_pattern[0])
         # Check if a folder was specified
         if download_pattern[0].endswith('/'):
             # Use AzureDownload folder to download folders
@@ -777,7 +1017,7 @@ def download_files(
                 object_name=download_pattern[0],
                 container_name=container_name,
                 output_path=path,
-                account_name=settings.AZURE_ACCOUNT_NAME,
+                account_name=settings.azure_account_name,
                 category='folder'
             )
         # Use AzureDownload file to download files
@@ -786,7 +1026,7 @@ def download_files(
                 object_name=download_pattern[0],
                 container_name=container_name,
                 output_path=path,
-                account_name=settings.AZURE_ACCOUNT_NAME,
+                account_name=settings.azure_account_name,
                 category='file'
             )
         # Download the file/folder
