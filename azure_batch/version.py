@@ -1,1 +1,7 @@
-__version__ = '0.0.1'
+"""
+__version__ : str
+    The current version of AzureBatch. This should be updated
+    with each new release.
+"""
+
+__version__ = '0.0.2'
