@@ -49,7 +49,7 @@ jobs:
         echo "$(conda info --base)/bin" >> $GITHUB_PATH
     - name: Upload package to olcbioinformatics
       run: |
-        anaconda -t ${{ secrets.OLCBIOINFORMATICS_ANACONDA_API_TOKEN }} upload -u olcbioinformatics $CONDA_PKG_PATH/allelefinder-*.tar.bz2
+        anaconda -t ${{ secrets.OLCBIOINFORMATICS_ANACONDA_API_TOKEN }} upload -u olcbioinformatics $CONDA_PKG_PATH/azure_batch-*.tar.bz2
     - name: Upload package to adamkoziol
       run: |
-        anaconda -t ${{ secrets.ADAMKOZIOL_ANACONDA_API_TOKEN }} upload -u adamkoziol $CONDA_PKG_PATH/allelefinder-*.tar.bz2
+        anaconda -t ${{ secrets.ADAMKOZIOL_ANACONDA_API_TOKEN }} upload -u adamkoziol $CONDA_PKG_PATH/azure_batch-*.tar.bz2
