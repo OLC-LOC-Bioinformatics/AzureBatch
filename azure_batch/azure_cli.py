@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 
 """
-Argument parser and class to run Azure batch methods to upload files to blob, as well as create, monitor, and delete
-pools, jobs, and tasks. Code is based off of https://github.com/Azure-Samples/batch-python-quickstart
+Argument parser and class to run Azure batch methods to upload files to blob,
+as well as create, monitor, and delete pools, jobs, and tasks. Code is based
+off of https://github.com/Azure-Samples/batch-python-quickstart
 """
 
 # Standard imports
@@ -22,16 +23,10 @@ import azure.batch.models as batchmodels
 from azure.common.credentials import ServicePrincipalCredentials
 from azure.core.exceptions import ResourceExistsError
 from azure.storage.blob import (
-    AccountSasPermissions,
-    BlobServiceClient,
-    BlobSasPermissions,
-    generate_blob_sas,
-    generate_container_sas,
-    ResourceTypes
+    BlobServiceClient
 )
 
 from azure_storage.methods import (
-    create_container_client,
     validate_container_name
 )
 from dotenv import load_dotenv, dotenv_values
@@ -61,14 +56,16 @@ __author__ = 'adamkoziol'
 
 class AzureBatch:
     """
-    Upload files, create and delete pools, jobs, and tasks as required for Azure batch analyses
+    Upload files, create and delete pools, jobs, and tasks as required for
+    Azure batch analyses
     """
 
     def main(self):
         """
         Run the necessary functions for AzureBatch
         """
-        # Use the blob client to create the container in Azure Storage if it doesn't yet exist.
+        # Use the blob client to create the container in Azure Storage if it
+        # doesn't yet exist.
         try:
             self.blob_service_client.create_container(self.container)
         except ResourceExistsError:
@@ -90,18 +87,22 @@ class AzureBatch:
                     bulk_input_file_pattern=self.bulk_input_file_pattern
                 )
 
-            # Validate the patterns, and add the container name to the destination path on the VM
+            # Validate the patterns, and add the container name to the
+            # destination path on the VM
             input_file_pattern_paths = parse_resource_input_pattern(
                 input_file_pattern=self.input_file_pattern
             )
-            # Set the name of the file to which resource file matches are to be written
+            # Set the name of the file to which resource file matches are to
+            # be written
             resource_file_list = os.path.join(self.path, 'resource_files.txt')
-            # As additional matches are appended to the file, it must be deleted first
+            # As additional matches are appended to the file, it must be
+            # deleted first
             if os.path.isfile(resource_file_list):
                 os.remove(resource_file_list)
 
             logging.warning('Locating resource files in blob storage')
-            # Find all the resource files in blob storage matching the resource patterns
+            # Find all the resource files in blob storage matching the
+            # resource patterns
             prep_resource_files(
                 input_file_pattern=input_file_pattern_paths,
                 blob_service_client=self.blob_service_client,
@@ -126,30 +127,36 @@ class AzureBatch:
 
         # Set the credentials for creating a batch service client
         credentials = ServicePrincipalCredentials(
-            client_id=self.settings.VM_CLIENT_ID,
-            secret=self.settings.VM_SECRET,
-            tenant=self.settings.VM_TENANT,
+            client_id=self.settings.vm_client_id,
+            secret=self.settings.vm_secret,
+            tenant=self.settings.vm_tenant,
             resource="https://batch.core.windows.net/"
         )
 
         # Create the batch service client
         batch_client = BatchServiceClient(
             credentials,
-            batch_url=self.settings.BATCH_ACCOUNT_URL
+            batch_url=self.settings.batch_account_url
         )
 
-        # If a unique ID was not provided, create an eight-digit hex to be used in creating pools/jobs/tasks
+        # If a unique ID was not provided, create an eight-digit hex to be
+        # used in creating pools/jobs/tasks
         if not self.unique_id:
             self.unique_id = uuid.uuid4().hex[:8]
-            logging.warning('Using %s as the unique identifier', self.unique_id)
+            logging.warning(
+                'Using %s as the unique identifier',
+                self.unique_id
+            )
         # Create variables to store the names for the pool, job, and task
         pool_id = f'{self.container}-{self.unique_id}-pool'
         job_id = f'{self.container}-{self.unique_id}-job'
         task_id = f'{self.container}-{self.unique_id}-task'
-        # As there can be multiple tasks, add an integer to the task ID to keep them unique
+        # As there can be multiple tasks, add an integer to the task ID to
+        # keep them unique
         task_count = 0
         try:
-            # Create the pool that will contain compute nodes to perform the analyses
+            # Create the pool that will contain compute nodes to perform
+            # the analyses
             logging.warning('Creating pool %s', pool_id)
             create_pool(
                 batch_service_client=batch_client,
@@ -204,8 +211,8 @@ class AzureBatch:
                 value=tasks
             )
 
-            # If this code is called by FoodPort, the task completion, file download, and pool/job cleanup will be
-            # handled separately
+            # If this code is called by FoodPort, the task completion, file
+            # download, and pool/job cleanup will be handled separately
             if self.worker:
                 raise SystemExit
 
@@ -226,7 +233,10 @@ class AzureBatch:
                     settings=self.settings
                 )
 
-            logging.warning("Success! All tasks reached the 'Completed' state within the specified timeout period.")
+            logging.warning(
+                "Success! All tasks reached the 'Completed' state within "
+                "the specified timeout period."
+            )
 
             # Print out some timing info
             end_time = datetime.datetime.now().replace(microsecond=0)
@@ -247,11 +257,23 @@ class AzureBatch:
             batch_client.job.delete(job_id)
             batch_client.pool.delete(pool_id)
 
-    def __init__(self, command_file, vm_size, settings, container, path, upload_folder=None,
-                 input_file_pattern=None, bulk_input_file_pattern=None, download_file_pattern=None,
-                 unique_id=None, worker=True, no_tidy=False):
+    def __init__(
+            self,
+            command_file,
+            vm_size,
+            settings,
+            container,
+            path,
+            upload_folder=None,
+            input_file_pattern=None,
+            bulk_input_file_pattern=None,
+            download_file_pattern=None,
+            unique_id=None,
+            worker=True,
+            no_tidy=False):
 
-        # Use datetime.datatime to set the current time. Will be used to calculate timeouts
+        # Use datetime.datetime to set the current time. Will be used to
+        # calculate timeouts
         self.start_time = datetime.datetime.now().replace(microsecond=0)
 
         logging.warning('Beginning batch submission process')
@@ -261,11 +283,14 @@ class AzureBatch:
             command_file=command_file
         )
         self.settings = settings
-        # Create the blob client, for use in obtaining references to blob storage containers and uploading
-        # files to containers.
+        # Create the blob client, for use in obtaining references to blob
+        # storage containers and uploading files to containers.
         self.blob_service_client = BlobServiceClient(
-            account_url=f'https://{settings.AZURE_ACCOUNT_NAME}.blob.core.windows.net/',
-            credential=self.settings.AZURE_ACCOUNT_KEY
+            account_url=(
+                f'https://{settings.azure_account_name}'
+                '.blob.core.windows.net/'
+            ),
+            credential=self.settings.azure_account_key
         )
         # Validate the supplied container name
         self.container = validate_container_name(
@@ -284,6 +309,9 @@ class AzureBatch:
 
 
 def cli():
+    """
+    Collect the arguments, create an object, and run the script
+    """
     parser = ArgumentParser(
         description='Run workflows in batch VMs on Azure',
         formatter_class=RawTextHelpFormatter
@@ -293,21 +321,25 @@ def cli():
         metavar='container',
         required=True,
         type=str,
-        help='Name of container for input files to be used in the analyses. This container will be mounted to the '
-             'VM using blobfuse, so all input files must either already be present, uploaded (--upload), or copied '
-             '(-input or -bulk_input) to this container'
+        help='Name of container for input files to be used in the analyses. '
+        'This container will be mounted to the VM using blobfuse, so all '
+        'input files must either already be present, uploaded (--upload), or '
+        'copied (-input or -bulk_input) to this container'
     )
     parser.add_argument(
         '-cmd', '--cmd',
         metavar='system call file',
         required=True,
         type=str,
-        help='Name and path of file containing system call(s) to run in task(s) (one per line). '
-             'The command(s) must include any environment activation steps e.g. \n'
-             'source $CONDA/activate /envs/cowbat && assembly_pipeline.py -s $AZ_BATCH_NODE_MOUNTS_DIR/container-name '
-             '-r /databases/0.5.0.23\n Note that the $CONDA directory is assumed to be /usr/bin/miniconda/bin and the '
-             '$AZ_BATCH_NODE_MOUNTS_DIR is a default environment variable where all mount directories reside. For '
-             'Ubuntu, this location is /mnt/batch/tasks/fsmounts'
+        help='Name and path of file containing system call(s) to run in '
+        'task(s) (one per line). The command(s) must include any environment '
+        'activation steps e.g. \n'
+        'source $CONDA/activate /envs/cowbat && assembly_pipeline.py '
+        '-s $AZ_BATCH_NODE_MOUNTS_DIR/container-name '
+        '-r /databases/0.5.0.23\n Note that the $CONDA directory is assumed '
+        'to be /usr/bin/miniconda/bin and the $AZ_BATCH_NODE_MOUNTS_DIR is '
+        'a default environment variable where all mount directories reside. '
+        'For Ubuntu, this location is /mnt/batch/tasks/fsmounts'
     )
     parser.add_argument(
         '-s', '--settings',
@@ -316,19 +348,41 @@ def cli():
         help='Name and path of file with the following Azure credentials: \n'
              'AZURE_ACCOUNT_NAME=blob storage account name\n'
              'AZURE_ACCOUNT_KEY=blob storage account key\n'
-             'BATCH_ACCOUNT_NAME=azure batch account name\n'
+             'BATCH_ACCOUNT_NAME=batch account name\n'
              'BATCH_ACCOUNT_URL=azure batch account URL\n'
-             'BATCH_ACCOUNT_KEY=azure batch account key\n'
-             'VM_IMAGE=resource ID of VM image on Azure\n'
-             'VM_CLIENT_ID=user:name extracted from az account list\n'
-             'VM_SECRET=extracted from az vm secret list --name MyVirtualMachine --resource-group MyResourceGroup\n'
+             'BATCH_ACCOUNT_SUBNET=ID of subnet linked to batch account\n'
+             'VM_IMAGE=resource ID of the COWBAT VM image\n'
+             'AMPLISEQ_IMAGE=resource ID of the AmmpliSeq VM image\n'
+             'COWSNPHR_IMAGE=resource ID of the COWSNPhR VM image\n'
+             'VM_SECRET=extracted from az vm secret list '
+             '--name MyVirtualMachine --resource-group MyResourceGroup\n'
              'VM_TENANT=tenantID extracted from az account list\n'
+    )
+    parser.add_argument(
+        '-a', '--analysis_type',
+        metavar='analysis_type',
+        default='COWBAT',
+        choices=[
+            'COWBAT',
+            'COWSNPhR',
+            'AmpliSeq'
+        ],
+        help='The analysis type to be performed. COWBAT also includes most '
+        'workflows from FoodPort, including GeneSeekr, Prokka, AMR, '
+        'VirusTyper, PrimerFinder, etc.'
     )
     parser.add_argument(
         '-vm', '--vm_size',
         metavar='vm_size',
         default='Standard_D32s_v3',
-        choices=['Standard_D32s_v3', 'Standard_D16s_v3', 'Standard_D8s_v3', 'Standard_D4ds_v5'],
+        choices=[
+            'Standard_D64s_v3',
+            'Standard_D48s_v3',
+            'Standard_D32s_v3',
+            'Standard_D16s_v3',
+            'Standard_D8s_v3',
+            'Standard_D4ds_v5'
+        ],
         help='Size of VM to use. Default is \'Standard_D32s_v3\''
     )
     parser.add_argument(
@@ -336,8 +390,9 @@ def cli():
         metavar='path',
         default=os.getcwd(),
         type=str,
-        help='Name and path of folder into which files from tasks are to be downloaded. If not provided, the '
-             'current working directory will be used'
+        help='Name and path of folder into which files from tasks are to be '
+        'downloaded. If not provided, the current working directory will be '
+        'used'
     )
     parser.add_argument(
         '-u', '--upload_folder',
@@ -352,63 +407,79 @@ def cli():
         metavar='input_file_pattern',
         action='append',
         nargs='+',
-        help='Pattern to use to specify which file(s)/folder(s) to copy to the container (--container), as well as any '
-             'required folder structure. The wildcard character * can be used to specify multiple files/folders. '
-             'By default, the files will be placed in the root of the container, so you only need to specify the '
-             'destination if the files need to be in a subdirectory. The general format of the argument is: \n '
-             'container_name/file_name destination_folder \n '
-             'e.g. sequence_data/2022-SEQ-1399.fasta sequences <- this file will be placed in the sequences '
-             'subdirectory of the supplied --container \n'
-             'sequence_data/2022-SEQ-1399.fasta  <- this file will be placed in the --container \n'
-             'sequence_data/*.fasta sequences \n <- all the .fasta files from the sequence_date container will be '
-             'copied to the --container \n'
-             'sequence_data/escherichia/ sequences <- all files in the escherichia folder in the sequence_data '
-             'container will be copied to the sequences folder in the --container (note that the trailing slash is '
-             'required) \n'
-             'sequence_data/escherichia/* sequences/verotoxin <- this allows nesting within the destination folder \n'
-             'The -input argument can be provided multiple times '
-             'e.g. -input sequence_data/*.fasta sequences -input targets/verotoxin_targets.fasta targets'
-             'This argument is mutually exclusive with --bulk_input_file_pattern'
+        help='Pattern to use to specify which file(s)/folder(s) to copy to '
+        'the container (--container), as well as any required folder '
+        'structure. The wildcard character * can be used to specify multiple '
+        'files/folders. By default, the files will be placed in the root of '
+        'the container, so you only need to specify the destination if the '
+        'files need to be in a subdirectory. The general format of the '
+        'argument is: \n '
+        'container_name/file_name destination_folder \n '
+        'e.g. sequence_data/2022-SEQ-1399.fasta sequences <- this file will '
+        'be placed in the sequences '
+        'subdirectory of the supplied --container \n'
+        'sequence_data/2022-SEQ-1399.fasta  <- this file will be placed '
+        'in the --container \n'
+        'sequence_data/*.fasta sequences \n <- all the .fasta files from the '
+        'sequence_date container will be copied to the --container \n'
+        'sequence_data/escherichia/ sequences <- all files in the '
+        'escherichia folder in the sequence_data container will be copied to '
+        'the sequences folder in the --container (note that the trailing '
+        'slash is required) \n'
+        'sequence_data/escherichia/* sequences/verotoxin <- this allows '
+        'nesting within the destination folder \n'
+        'The -input argument can be provided multiple times '
+        'e.g. -input sequence_data/*.fasta sequences -input '
+        'targets/verotoxin_targets.fasta targets'
+        'This argument is mutually exclusive with --bulk_input_file_pattern'
     )
     input_group.add_argument(
         '-bulk_input', '--bulk_input_file_pattern',
         metavar='bulk_input_file_pattern',
         type=str,
-        help='Name and path of a text file with the required file(s)/folder(s) to copy to the --container, as well as '
-             'their destination folder. Example arguments are provided in the '
-             '--input_file_pattern option above. This argument is mutually exclusive with --input_file_pattern'
+        help='Name and path of a text file with the required '
+        'file(s)/folder(s) to copy to the --container, as well as '
+        'their destination folder. Example arguments are provided in the '
+        '--input_file_pattern option above. This argument is mutually '
+        'exclusive with --input_file_pattern'
     )
     parser.add_argument(
         '-download', '--download_file_pattern',
         metavar='download_file_pattern',
         action='append',
         nargs='+',
-        help='Pattern to use to specify which file(s)/folder(s) to download from blob storage following successful '
-             'completion of the analyses. Specify a file name e.g. log.txt, or a folder e.g. reports/ <- note the '
-             'trailing slash is mandatory in order for the program to recognise a folder vs a file. This argument can '
-             'be supplied multiple times e.g -download log.txt -download error.txt -download reports/ \n'
-             'Files will be downloaded to the location specified by the -path argument'
+        help='Pattern to use to specify which file(s)/folder(s) to download '
+        'from blob storage following successful completion of the analyses. '
+        'Specify a file name e.g. log.txt, or a folder e.g. reports/ '
+        '<- note the trailing slash is mandatory in order for the program to '
+        'recognise a folder vs a file. This argument can be supplied multiple '
+        'times e.g -download log.txt -download error.txt -download reports/ \n'
+        'Files will be downloaded to the location specified by the '
+        '-path argument'
     )
     parser.add_argument(
         '-unique_id', '--unique_id',
         metavar='unique_id',
-        help='Provide an identifier to append to pool/job/task names. By default a random eight-digit hash is added '
-             'to ensure that no collisions occur. However, when this code is called from FoodPort, the primary key '
-             'for the model of the analysis will be used. Using this argument can duplicate this functionality.'
+        help='Provide an identifier to append to pool/job/task names. '
+        'By default a random eight-digit hash is added to ensure that no '
+        'collisions occur. However, when this code is called from FoodPort, '
+        'the primary key for the model of the analysis will be used. '
+        'Using this argument can duplicate this functionality.'
     )
     parser.add_argument(
         '-v', '--verbosity',
         choices=['debug', 'info', 'warning', 'error', 'critical'],
         metavar='VERBOSITY',
         default='warning',
-        help='Set the logging level. Options are debug, info, warning, error, and critical. '
-             'Default is info.'
+        help='Set the logging level. Options are debug, info, warning, error, '
+        'and critical. Default is info.'
     )
     parser.add_argument(
         '-n', '--no_tidy',
         action='store_true',
-        help='Do not automatically delete pools/jobs/tasks when the script errors or completes. Useful for debugging '
-             'VM. PLEASE REMEMBER TO CLEAN EVERYTHING UP MANUALLY'
+        help='Do not automatically delete pools/jobs/tasks when the script '
+        'errors or completes. Useful for debugging VM. '
+        'PLEASE REMEMBER TO CLEAN EVERYTHING UP MANUALLY'
     )
     arguments = parser.parse_args()
     logging.basicConfig(
@@ -420,7 +491,10 @@ def cli():
     dotenv_path = Path(arguments.settings)
     load_dotenv(dotenv_path=dotenv_path)
     settings_dict = dotenv_values(dotenv_path)
-    local_settings = Settings(settings=settings_dict)
+    local_settings = Settings(
+        settings=settings_dict,
+        analysis_type=arguments.analysis_type
+    )
 
     azure_batch = AzureBatch(
         command_file=arguments.cmd,
