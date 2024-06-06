@@ -34,6 +34,10 @@ from dotenv import (
     load_dotenv
 )
 
+from flask import jsonify
+
+
+# Local imports
 from azure_batch.methods import (
     add_tasks,
     copy_blobs_to_container,
@@ -217,7 +221,15 @@ class AzureBatch:
             # If this code is called by FoodPort, the task completion, file
             # download, and pool/job cleanup will be handled separately
             if self.worker:
-                return pool_id, job_id, tasks, "Success", ""
+                return jsonify(
+                    {
+                        'pool_id': pool_id,
+                        'job_id': job_id,
+                        'tasks': tasks,
+                        'status': "Success",
+                        'error': ""
+                    }
+                )
 
             # Pause execution until tasks reach Completed state.
             wait_for_tasks_to_complete(
@@ -249,7 +261,15 @@ class AzureBatch:
         except batchmodels.BatchErrorException as err:
             print_batch_exception(err)
             if self.worker:
-                return pool_id, job_id, tasks, "Failure", str(err)
+                return jsonify(
+                    {
+                        'pool_id': pool_id,
+                        'job_id': job_id,
+                        'tasks': tasks,
+                        'status': "Failure",
+                        'error': str(err)
+                    }
+                )
             raise
 
         finally:
