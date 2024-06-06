@@ -45,7 +45,7 @@ jobs:
         path: $CONDA_PKG_PATH/azure_batch-*.tar.bz2
     - name: Install anaconda-client
       run: |
-        conda install -y anaconda-client
+        mamba install -y anaconda-client
         echo "$(conda info --base)/bin" >> $GITHUB_PATH
     - name: Upload package to olcbioinformatics
       run: |
