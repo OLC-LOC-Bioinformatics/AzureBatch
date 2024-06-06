@@ -4,4 +4,4 @@ __version__ : str
     with each new release.
 """
 
-__version__ = '0.0.7'
+__version__ = '0.0.8'
