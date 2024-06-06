@@ -292,16 +292,14 @@ class AzureBatch:
                     }
                 )
             raise
-
         finally:
+            if not self.worker:
+                logging.warning('Cleaning up pool and job')
+                # Clean up Batch resources
+                batch_client.job.delete(job_id)
+                batch_client.pool.delete(pool_id)
             if self.no_tidy:
                 raise SystemExit
-            if self.worker:
-                raise SystemExit
-            logging.warning('Cleaning up pool and job')
-            # Clean up Batch resources
-            batch_client.job.delete(job_id)
-            batch_client.pool.delete(pool_id)
 
     def __init__(
             self,
