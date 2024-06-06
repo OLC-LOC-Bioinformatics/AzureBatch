@@ -24,6 +24,7 @@ requirements:
     - azure-storage-blob=12.20.0=pyhd8ed1ab_0
     - azure_storage=0.0.13=py_0
     - coloredlogs=15.0.1=pyhd8ed1ab_3
+    - flask=3.0.3=pyhd8ed1ab_0
     - python=3.12.3=hab00c5b_0_cpython
     - python-dotenv=1.0.1=pyhd8ed1ab_0
     - pytest=8.2.1=pyhd8ed1ab_0
