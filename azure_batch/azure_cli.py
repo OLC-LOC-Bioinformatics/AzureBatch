@@ -217,7 +217,7 @@ class AzureBatch:
             # If this code is called by FoodPort, the task completion, file
             # download, and pool/job cleanup will be handled separately
             if self.worker:
-                raise SystemExit
+                return pool_id, job_id, tasks, "Success", ""
 
             # Pause execution until tasks reach Completed state.
             wait_for_tasks_to_complete(
@@ -248,6 +248,8 @@ class AzureBatch:
 
         except batchmodels.BatchErrorException as err:
             print_batch_exception(err)
+            if self.worker:
+                return pool_id, job_id, tasks, "Failure", str(err)
             raise
 
         finally:
