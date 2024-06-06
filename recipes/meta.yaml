@@ -41,7 +41,7 @@ about:
   license: MIT
   license_family: MIT
   license_file: LICENSE
-  summary: Allele Tools
+  summary: AzureBatch is a Python-based suite of tools designed for the creation of pools, jobs and tasks in an Azure batch account
   description: |
     AzureBatch is a Python-based suite of tools designed for the creation of pools, jobs and tasks in an Azure batch account
   doc_url: https://github.com/OLC-LOC-Bioinformatics/AzureBatch
