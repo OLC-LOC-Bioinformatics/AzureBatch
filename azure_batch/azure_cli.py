@@ -102,12 +102,14 @@ class AzureBatch:
             # Set the name of the file to which resource file matches are to
             # be written
             resource_file_list = os.path.join(self.path, 'resource_files.txt')
+
             # As additional matches are appended to the file, it must be
             # deleted first
             if os.path.isfile(resource_file_list):
                 os.remove(resource_file_list)
 
             logging.warning('Locating resource files in blob storage')
+
             # Find all the resource files in blob storage matching the
             # resource patterns
             prep_resource_files(
@@ -154,10 +156,15 @@ class AzureBatch:
                 'Using %s as the unique identifier',
                 self.unique_id
             )
+
         # Create variables to store the names for the pool, job, and task
         pool_id = f'{self.container}-{self.unique_id}-pool'
         job_id = f'{self.container}-{self.unique_id}-job'
         task_id = f'{self.container}-{self.unique_id}-task'
+
+        # Create a list to store task IDs
+        task_ids = []
+
         # As there can be multiple tasks, add an integer to the task ID to
         # keep them unique
         task_count = 0
@@ -194,10 +201,12 @@ class AzureBatch:
 
             # Create a task for each command in the file
             for cmd_num, cmd in enumerate(self.sys_call):
+                # Set the name of the task
+                specific_task_id = f'{task_id}-{str(task_count)}'
                 # Do not specify resource_output_files until the final task
                 if cmd_num < len(self.sys_call) - 1:
                     add_tasks(
-                        task_id=f'{task_id}-{str(task_count)}',
+                        task_id=specific_task_id,
                         tasks=tasks,
                         resource_input_files=[],
                         resource_output_files=[],
@@ -205,12 +214,14 @@ class AzureBatch:
                     )
                 else:
                     add_tasks(
-                        task_id=f'{task_id}-{str(task_count)}',
+                        task_id=specific_task_id,
                         tasks=tasks,
                         resource_input_files=[],
                         resource_output_files=output_files,
                         sys_call=cmd
                     )
+                # Append the task ID to the list of task IDs
+                task_ids.append(specific_task_id)
                 task_count += 1
             # Add the task(s) to the job.
             batch_client.task.add_collection(
@@ -218,14 +229,24 @@ class AzureBatch:
                 value=tasks
             )
 
+            # Log the task info
+            logging.warning('Created tasks %s', task_ids)
+
             # If this code is called by FoodPort, the task completion, file
             # download, and pool/job cleanup will be handled separately
             if self.worker:
+                logging.warning(
+                    'Returning pool (%s), job (%s), and task ID (%s), as well '
+                    'as status (success), and error (None)',
+                    pool_id,
+                    job_id,
+                    task_ids
+                )
                 return jsonify(
                     {
                         'pool_id': pool_id,
                         'job_id': job_id,
-                        'tasks': tasks,
+                        'tasks': task_ids,
                         'status': "Success",
                         'error': ""
                     }
@@ -265,7 +286,7 @@ class AzureBatch:
                     {
                         'pool_id': pool_id,
                         'job_id': job_id,
-                        'tasks': tasks,
+                        'tasks': task_ids,
                         'status': "Failure",
                         'error': str(err)
                     }
