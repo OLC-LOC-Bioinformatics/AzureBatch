@@ -157,10 +157,16 @@ class AzureBatch:
                 self.unique_id
             )
 
-        # Create variables to store the names for the pool, job, and task
-        pool_id = f'{self.container}-{self.unique_id}-pool'
-        job_id = f'{self.container}-{self.unique_id}-job'
-        task_id = f'{self.container}-{self.unique_id}-task'
+        # Allow for true FoodPort naming: container name only
+        if self.unique_id == 'FoodPort':
+            pool_id = self.container
+            job_id = self.container
+            task_id = self.container
+        else:
+            # Create variables to store the names for the pool, job, and task
+            pool_id = f'{self.container}-{self.unique_id}-pool'
+            job_id = f'{self.container}-{self.unique_id}-job'
+            task_id = f'{self.container}-{self.unique_id}-task'
 
         # Create a list to store task IDs
         task_ids = []
@@ -293,13 +299,13 @@ class AzureBatch:
                 )
             raise
         finally:
+            if self.no_tidy:
+                raise SystemExit
             if not self.worker:
                 logging.warning('Cleaning up pool and job')
                 # Clean up Batch resources
                 batch_client.job.delete(job_id)
                 batch_client.pool.delete(pool_id)
-            if self.no_tidy:
-                raise SystemExit
 
     def __init__(
             self,
