@@ -933,6 +933,7 @@ def match_file_and_expression(
 
 
 def copy_blobs_to_container(
+        blob_service_client,
         container_name,
         resource_files_with_output,
         settings):
@@ -951,11 +952,24 @@ def copy_blobs_to_container(
     it creates an instance of the AzureMove class and calls its main method
     to perform the copy operation.
     """
+    # Initialise a list to store any missing files
+    missing = []
+
     for copy_operation in resource_files_with_output:
+
         # Rename the components of the list with useful variable names
         source_container = copy_operation[0]
         file_name = copy_operation[1]
         destination = copy_operation[2]
+
+        # Log the copy information
+        logging.info(
+            'Copying %s from %s to %s',
+            file_name,
+            source_container,
+            container_name
+        )
+
         # Copy the files to the appropriate container
         copy_file = AzureMove(
             object_name=file_name,
@@ -969,6 +983,54 @@ def copy_blobs_to_container(
             name=None
         )
         copy_file.main()
+
+        # Check to see if the blob copied successfully
+        if not check_blob_exists(
+            blob_name=file_name,
+            blob_service_client=blob_service_client,
+            container_name=container_name
+        ):
+            # Add the file to the list of missing files
+            missing.append(
+                f'{file_name} from {source_container} to {container_name}'
+            )
+
+        # Log the missing files
+        if missing:
+            logging.error(
+                'The following files did not successfully copy: %s ',
+                ';'.join(missing)
+            )
+            raise SystemExit
+
+
+def check_blob_exists(blob_name, blob_service_client, container_name):
+    """
+    Checks if a blob exists in the specified container.
+
+    Parameters:
+    blob_service_client: BlobServiceClient
+    blob_name (str): The name of the blob to check.
+    container_name (str): The name of the container.
+
+    Returns:
+    bool: True if the blob exists, False otherwise.
+    """
+    try:
+        # Get a client for the target container
+        container_client = blob_service_client.get_container_client(
+            container_name
+        )
+
+        # Try to get the blob's properties
+        blob_client = container_client.get_blob_client(blob_name)
+        blob_client.get_blob_properties()
+
+        # If the above line did not raise an exception, the blob exists
+        return True
+    except ResourceNotFoundError:
+        # If the blob is not found, a ResourceNotFoundError will be raised
+        return False
 
 
 def read_command_file(command_file: str) -> list:

@@ -129,6 +129,7 @@ class AzureBatch:
             # Copy all necessary files to the container
             logging.warning('Copying files to %s', self.container)
             copy_blobs_to_container(
+                blob_service_client=self.blob_service_client,
                 container_name=self.container,
                 resource_files_with_output=resource_files_with_output,
                 settings=self.settings
