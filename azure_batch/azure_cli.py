@@ -93,12 +93,12 @@ class AzureBatch:
                 self.input_file_pattern = read_bulk_input_pattern(
                     bulk_input_file_pattern=self.bulk_input_file_pattern
                 )
-
             # Validate the patterns, and add the container name to the
             # destination path on the VM
             input_file_pattern_paths = parse_resource_input_pattern(
                 input_file_pattern=self.input_file_pattern
             )
+            
             # Set the name of the file to which resource file matches are to
             # be written
             resource_file_list = os.path.join(self.path, 'resource_files.txt')
@@ -120,12 +120,14 @@ class AzureBatch:
             resource_files = parse_resource_file_list(
                 resource_file_list=resource_file_list
             )
+
             # Match the retrieved file list with the file pattern
             resource_files_with_output = match_file_and_expression(
                 resource_files=resource_files,
                 input_file_pattern_paths=input_file_pattern_paths,
                 container=self.container
             )
+
             # Copy all necessary files to the container
             logging.warning('Copying files to %s', self.container)
             copy_blobs_to_container(

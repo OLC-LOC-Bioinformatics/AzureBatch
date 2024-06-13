@@ -715,8 +715,7 @@ def prep_resource_files(
     :param list input_file_pattern:
     :param blob_service_client: BlobServiceClient
     :param str resource_file_list: Name and path of file to which the matches
-    to the provided expressions are to be
-    written
+        to the provided expressions are to be written
     """
     # Create a list to store any patterns that did not return any files
     missing_patterns = []
@@ -963,7 +962,7 @@ def copy_blobs_to_container(
         destination = copy_operation[2]
 
         # Log the copy information
-        logging.info(
+        logging.warning(
             'Copying %s from %s to %s',
             file_name,
             source_container,
@@ -1002,6 +1001,10 @@ def copy_blobs_to_container(
                 ';'.join(missing)
             )
             raise SystemExit
+
+        logging.info(
+            'The file copy operation complete successfully'
+        )
 
 
 def check_blob_exists(blob_name, blob_service_client, container_name):
