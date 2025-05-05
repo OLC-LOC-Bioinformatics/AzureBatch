@@ -11,7 +11,7 @@ jobs:
       CONDA_PKG_PATH: /usr/share/miniconda/conda-bld/noarch
     steps:
     - name: Checkout code
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
     - name: Setup Conda
       uses: conda-incubator/setup-miniconda@v2
       with:
@@ -39,17 +39,17 @@ jobs:
       run: |
         conda build .
     - name: Upload Conda package
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
         name: azure_batch
-        path: $CONDA_PKG_PATH/azure_batch-*.tar.bz2
+        path: $CONDA_PKG_PATH/azure_batch-*.conda
     - name: Install anaconda-client
       run: |
         conda install -y anaconda-client
         echo "$(conda info --base)/bin" >> $GITHUB_PATH
     - name: Upload package to olcbioinformatics
       run: |
-        anaconda -t ${{ secrets.OLCBIOINFORMATICS_ANACONDA_API_TOKEN }} upload -u olcbioinformatics $CONDA_PKG_PATH/azure_batch-*.tar.bz2
+        anaconda -t ${{ secrets.OLCBIOINFORMATICS_ANACONDA_API_TOKEN }} upload -u olcbioinformatics $CONDA_PKG_PATH/azure_batch-*.conda
     - name: Upload package to adamkoziol
       run: |
-        anaconda -t ${{ secrets.ADAMKOZIOL_ANACONDA_API_TOKEN }} upload -u adamkoziol $CONDA_PKG_PATH/azure_batch-*.tar.bz2
+        anaconda -t ${{ secrets.ADAMKOZIOL_ANACONDA_API_TOKEN }} upload -u adamkoziol $CONDA_PKG_PATH/azure_batch-*.conda
