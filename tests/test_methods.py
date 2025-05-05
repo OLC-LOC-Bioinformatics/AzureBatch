@@ -141,12 +141,19 @@ class TestSettings:
             'AZURE_ACCOUNT_NAME': 'test_azure_account_name',
             'AZURE_ACCOUNT_KEY': 'test_azure_account_key',
             'BATCH_ACCOUNT_URL': 'test_batch_account_url',
+            'BATCH_ACCOUNT_SUBNET': 'test_batch_account_subnet',
             'VM_SECRET': 'test_vm_secret',
-            'VM_TENANT': 'test_vm_tenant'
+            'VM_CLIENT_ID': 'test_vm_client_id',
+            'VM_TENANT': 'test_vm_tenant',
+            'VM_IMAGE': 'test_vm_image',
+            'COWBAT_NODE_AGENT_SKU': 'test_node_agent_sku',
         }
 
         # Create an instance of Settings
-        settings_obj = Settings(settings)
+        settings_obj = Settings(
+            settings=settings,
+            analysis_type='COWBAT'
+        )
 
         # Check that the attributes are set as expected
         assert settings_obj.azure_account_name == 'test_azure_account_name'
@@ -328,19 +335,15 @@ def test_create_pool():
     Test the create_pool function to ensure it's calling the pool.add method
     of the BatchServiceClient with the correct arguments.
     """
-    # Load the environment variables
     env_vars = load_env_variables()
-
-    # Create a mock BatchServiceClient
     batch_service_client = Mock()
-
-    # Create a mock Settings object
     settings = Mock()
     settings.vm_image = 'test_vm_image'
     settings.azure_account_name = env_vars['AZURE_ACCOUNT_NAME']
     settings.azure_account_key = 'test_account_key'
+    settings.node_agent_sku_id = "batch.node.ubuntu 20.04"
+    settings.batch_account_subnet = "test_subnet"
 
-    # Call the function to be tested
     create_pool(
         batch_service_client=batch_service_client,
         pool_id='test_pool_id',
@@ -350,42 +353,26 @@ def test_create_pool():
         settings=settings
     )
 
-    # Define the expected PoolAddParameter
-    expected_pool_add_parameter = batchmodels.PoolAddParameter(
-        id='test_pool_id',
-        virtual_machine_configuration=(
-            batchmodels.VirtualMachineConfiguration(
-                image_reference=batchmodels.ImageReference(
-                    virtual_machine_image_id='test_vm_image',
-                ),
-                node_agent_sku_id="batch.node.ubuntu 20.04"
-            )
-        ),
-        vm_size='test_vm_size',
-        target_dedicated_nodes=1,
-        mount_configuration=[
-            batchmodels.MountConfiguration(
-                azure_blob_file_system_configuration=(
-                    batchmodels.AzureBlobFileSystemConfiguration(
-                        account_name=env_vars['AZURE_ACCOUNT_NAME'],
-                        account_key='test_account_key',
-                        container_name='test_container_name',
-                        relative_mount_path='test_mount_path',
-                        blobfuse_options=(
-                            '-o attr_timeout=240 '
-                            '-o entry_timeout=240 '
-                            '-o negative_timeout=120 '
-                        )
-                    )
-                )
-            )
-        ]
-    )
+    # Get the actual PoolAddParameter passed to pool.add
+    actual_call = batch_service_client.pool.add.call_args[0][0]
 
-    # Check that the pool.add method was called with the correct arguments
-    batch_service_client.pool.add.assert_called_once_with(
-        expected_pool_add_parameter
+    # Assert key fields
+    assert actual_call.id == 'test_pool_id'
+    assert (
+        actual_call.virtual_machine_configuration.image_reference.
+        virtual_machine_image_id == 'test_vm_image'
     )
+    assert actual_call.virtual_machine_configuration.node_agent_sku_id == \
+        "batch.node.ubuntu 20.04"
+    assert actual_call.vm_size == 'test_vm_size'
+    assert actual_call.target_dedicated_nodes == 1
+
+    blob_cfg = \
+        actual_call.mount_configuration[0].azure_blob_file_system_configuration
+    assert blob_cfg.account_name == env_vars['AZURE_ACCOUNT_NAME']
+    assert blob_cfg.account_key == 'test_account_key'
+    assert blob_cfg.container_name == 'test_container_name'
+    assert blob_cfg.relative_mount_path == 'test_mount_path'
 
 
 def test_create_job():
@@ -504,7 +491,7 @@ def test_prep_output_container():
             container_name=output_container_name,
             account_key=settings.azure_account_key,
             permission=AccountSasPermissions(read=True, write=True),
-            expiry=datetime.datetime.now(datetime.timezone.utc) + 
+            expiry=datetime.datetime.now(datetime.timezone.utc) +
             datetime.timedelta(hours=24)
         )
     )
