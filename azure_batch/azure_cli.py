@@ -98,7 +98,7 @@ class AzureBatch:
             input_file_pattern_paths = parse_resource_input_pattern(
                 input_file_pattern=self.input_file_pattern
             )
-            
+
             # Set the name of the file to which resource file matches are to
             # be written
             resource_file_list = os.path.join(self.path, 'resource_files.txt')
@@ -405,8 +405,14 @@ def cli():
              'BATCH_ACCOUNT_URL=azure batch account URL\n'
              'BATCH_ACCOUNT_SUBNET=ID of subnet linked to batch account\n'
              'VM_IMAGE=resource ID of the COWBAT VM image\n'
+             'COWBAT_NODE_AGENT_SKU=node agent SKU of the image'
+                'e.g. batch.node.ubuntu 24.04\n'
              'AMPLISEQ_IMAGE=resource ID of the AmmpliSeq VM image\n'
+             'AMPLISEQ_NODE_AGENT_SKU=node agent SKU of the image'
+                'e.g. batch.node.ubuntu 24.04\n'
              'COWSNPHR_IMAGE=resource ID of the COWSNPhR VM image\n'
+             'COWSNPHR_NODE_AGENT_SKU=node agent SKU of the image'
+                'e.g. batch.node.ubuntu 24.04\n'
              'VM_SECRET=extracted from az vm secret list '
              '--name MyVirtualMachine --resource-group MyResourceGroup\n'
              'VM_TENANT=tenantID extracted from az account list\n'
