@@ -21,6 +21,8 @@ requirements:
     - azure-batch=14.2.0=pyhd8ed1ab_0
     - azure-common=1.1.28=pyhd8ed1ab_0
     - azure-core=1.30.1=pyhd8ed1ab_0
+    - azure-identity=1.17.1=pyhd8ed1ab_1
+    - azure-mgmt-compute=29.1.0=pyh1a96a4e_0
     - azure-storage-blob=12.20.0=pyhd8ed1ab_0
     - azure_storage=0.0.14=py_0
     - coloredlogs=15.0.1=pyhd8ed1ab_3
