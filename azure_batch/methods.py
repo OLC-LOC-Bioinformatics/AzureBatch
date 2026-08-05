@@ -649,7 +649,8 @@ def log_output_resource_files(
         blob_storage_service_client: BlobServiceClient,
         output_files: list,
         settings: Settings,
-        output_container_name: str) -> list:
+    output_container_name: str,
+    log_prefix=None) -> list:
     """
     Create batchmodels.OutputFile object(s) for log files following
     task completion
@@ -671,13 +672,17 @@ def log_output_resource_files(
 
     # Add stdout and stderr.txt log files to the Azure container. This is
     # done even if task isn't successful
+    stderr_path = os.path.join(log_prefix, 'azure_stderr.txt') \
+        if log_prefix else 'azure_stderr.txt'
+    stdout_path = os.path.join(log_prefix, 'azure_stdout.txt') \
+        if log_prefix else 'azure_stdout.txt'
     output_files.append(
         batchmodels.OutputFile(
             file_pattern=os.path.join('$AZ_BATCH_TASK_DIR', 'stderr.txt'),
             destination=batchmodels.OutputFileDestination(
                 container=batchmodels.OutputFileBlobContainerDestination(
                     container_url=sas_url,
-                    path='azure_stderr.txt'
+                    path=stderr_path
                 )
             ),
             upload_options=batchmodels.OutputFileUploadOptions(
@@ -693,7 +698,7 @@ def log_output_resource_files(
             destination=batchmodels.OutputFileDestination(
                 container=batchmodels.OutputFileBlobContainerDestination(
                     container_url=sas_url,
-                    path='azure_stdout.txt'
+                    path=stdout_path
                 )
             ),
             upload_options=batchmodels.OutputFileUploadOptions(

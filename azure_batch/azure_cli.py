@@ -7,19 +7,16 @@ off of https://github.com/Azure-Samples/batch-python-quickstart
 """
 
 # Standard imports
-from argparse import (
-    ArgumentParser,
-    RawTextHelpFormatter
-)
 import datetime
 import logging
 import os
-from pathlib import Path
 import uuid
+from argparse import ArgumentParser, RawTextHelpFormatter
+from pathlib import Path
 
 # Third party imports
-from azure.batch import BatchServiceClient
 import azure.batch.models as batchmodels
+from azure.batch import BatchServiceClient
 from azure.common.credentials import ServicePrincipalCredentials
 from azure.core.exceptions import ResourceExistsError
 from azure.storage.blob import (
@@ -80,7 +77,7 @@ class AzureBatch:
 
         # Collect the input files to be analysed.
         if self.upload_folder:
-            logging.warning('Uploading files to %s', self.container)
+            self.logger.warning('Uploading files to %s', self.container)
             upload_prep(
                 upload_folder=self.upload_folder,
                 blob_service_client=self.blob_service_client,
@@ -93,6 +90,7 @@ class AzureBatch:
                 self.input_file_pattern = read_bulk_input_pattern(
                     bulk_input_file_pattern=self.bulk_input_file_pattern
                 )
+            assert self.input_file_pattern is not None
             # Validate the patterns, and add the container name to the
             # destination path on the VM
             input_file_pattern_paths = parse_resource_input_pattern(
@@ -108,7 +106,7 @@ class AzureBatch:
             if os.path.isfile(resource_file_list):
                 os.remove(resource_file_list)
 
-            logging.warning('Locating resource files in blob storage')
+            self.logger.warning('Locating resource files in blob storage')
 
             # Find all the resource files in blob storage matching the
             # resource patterns
@@ -129,7 +127,7 @@ class AzureBatch:
             )
 
             # Copy all necessary files to the container
-            logging.warning('Copying files to %s', self.container)
+            self.logger.warning('Copying files to %s', self.container)
             copy_blobs_to_container(
                 blob_service_client=self.blob_service_client,
                 container_name=self.container,
@@ -155,7 +153,7 @@ class AzureBatch:
         # used in creating pools/jobs/tasks
         if not self.unique_id:
             self.unique_id = uuid.uuid4().hex[:8]
-            logging.warning(
+            self.logger.warning(
                 'Using %s as the unique identifier',
                 self.unique_id
             )
@@ -180,7 +178,7 @@ class AzureBatch:
         try:
             # Create the pool that will contain compute nodes to perform
             # the analyses
-            logging.warning('Creating pool %s', pool_id)
+            self.logger.warning('Creating pool %s', pool_id)
             create_pool(
                 batch_service_client=batch_client,
                 pool_id=pool_id,
@@ -190,7 +188,7 @@ class AzureBatch:
                 mount_path=self.container
             )
             # Create the job that will run the tasks.
-            logging.warning('Creating job %s in pool %s', job_id, pool_id)
+            self.logger.warning('Creating job %s in pool %s', job_id, pool_id)
             create_job(
                 batch_service_client=batch_client,
                 job_id=job_id,
@@ -202,7 +200,8 @@ class AzureBatch:
                 blob_storage_service_client=self.blob_service_client,
                 output_files=[],
                 settings=self.settings,
-                output_container_name=self.container
+                output_container_name=self.container,
+                log_prefix=self.log_prefix
             )
 
             # Create a list to store the task(s)
@@ -211,7 +210,7 @@ class AzureBatch:
             # Create a task for each command in the file
             for cmd_num, cmd in enumerate(self.sys_call):
                 # Set the name of the task
-                specific_task_id = f'{task_id}-{str(task_count)}'
+                specific_task_id = f'{task_id}-{task_count!s}'
                 # Do not specify resource_output_files until the final task
                 if cmd_num < len(self.sys_call) - 1:
                     add_tasks(
@@ -239,12 +238,12 @@ class AzureBatch:
             )
 
             # Log the task info
-            logging.warning('Created tasks %s', task_ids)
+            self.logger.warning('Created tasks %s', task_ids)
 
             # If this code is called by FoodPort, the task completion, file
             # download, and pool/job cleanup will be handled separately
             if self.worker:
-                logging.warning(
+                self.logger.warning(
                     'Returning pool (%s), job (%s), and task ID (%s), as well '
                     'as status (success), and error (None)',
                     pool_id,
@@ -270,7 +269,7 @@ class AzureBatch:
 
             # Download the requested files from the Azure storage
             if self.download_file_pattern:
-                logging.warning('Downloading files from container')
+                self.logger.warning('Downloading files from container')
                 download_files(
                     container_name=self.container,
                     download_file_pattern=self.download_file_pattern,
@@ -278,15 +277,17 @@ class AzureBatch:
                     settings=self.settings
                 )
 
-            logging.warning(
+            self.logger.warning(
                 "Success! All tasks reached the 'Completed' state within "
                 "the specified timeout period."
             )
 
             # Print out some timing info
-            end_time = datetime.datetime.now().replace(microsecond=0)
+            end_time = datetime.datetime.now(
+                tz=datetime.timezone.utc
+            ).replace(microsecond=0)
             elapsed_time = end_time - self.start_time
-            logging.warning('Elapsed time: %s', elapsed_time)
+            self.logger.warning('Elapsed time: %s', elapsed_time)
 
         except batchmodels.BatchErrorException as err:
             print_batch_exception(err)
@@ -305,7 +306,7 @@ class AzureBatch:
             if self.no_tidy:
                 raise SystemExit
             if not self.worker:
-                logging.warning('Cleaning up pool and job')
+                self.logger.warning('Cleaning up pool and job')
                 # Clean up Batch resources
                 batch_client.job.delete(job_id)
                 batch_client.pool.delete(pool_id)
@@ -323,13 +324,19 @@ class AzureBatch:
             download_file_pattern=None,
             unique_id=None,
             worker=True,
-            no_tidy=False):
+            no_tidy=False,
+            log_prefix=None):
 
         # Use datetime.datetime to set the current time. Will be used to
         # calculate timeouts
-        self.start_time = datetime.datetime.now().replace(microsecond=0)
+        self.start_time = datetime.datetime.now(
+            tz=datetime.timezone.utc
+        ).replace(microsecond=0)
 
-        logging.warning('Beginning batch submission process')
+        # Create a logger to log the process of creating the pool, job, and task(s)
+        self.logger = logging.getLogger(__name__)
+
+        self.logger.warning('Beginning batch submission process')
 
         # Read in the command(s)
         self.sys_call = read_command_file(
@@ -349,7 +356,7 @@ class AzureBatch:
         self.container = validate_container_name(
             container_name=container
         )
-        logging.warning('Container name %s is valid', self.container)
+        self.logger.warning('Container name %s is valid', self.container)
         self.upload_folder = upload_folder
         self.input_file_pattern = input_file_pattern
         self.bulk_input_file_pattern = bulk_input_file_pattern
@@ -359,6 +366,7 @@ class AzureBatch:
         self.worker = worker
         self.download_file_pattern = download_file_pattern
         self.no_tidy = no_tidy
+        self.log_prefix = log_prefix
 
 
 def cli():
