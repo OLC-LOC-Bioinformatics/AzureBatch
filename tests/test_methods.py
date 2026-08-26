@@ -4,9 +4,10 @@ Collection of tests for methods.py
 
 # Standard imports
 import datetime
-from pathlib import Path
 import os
+import shlex
 import tempfile
+from pathlib import Path
 from unittest.mock import (
     Mock,
     patch,
@@ -213,7 +214,7 @@ class TestUploadFileToContainer:
     """
 
     @patch('azure.storage.blob.BlobServiceClient.get_blob_client')
-    @patch('logging.warning')
+    @patch('azure_batch.methods.logger.warning')
     def test_upload_file_to_container(
         self, mock_warning, mock_get_blob_client
     ):
@@ -252,7 +253,7 @@ class TestUploadFileToContainer:
         blob_client.delete_blob()
 
     @patch('azure.storage.blob.BlobServiceClient.get_blob_client')
-    @patch('logging.warning')
+    @patch('azure_batch.methods.logger.warning')
     def test_upload_file_to_container_exists(
         self, mock_warning, mock_get_blob_client
     ):
@@ -427,7 +428,7 @@ def test_add_tasks():
     expected_task_add_parameter = batchmodels.TaskAddParameter(
         id=task_id,
         constraints=batchmodels.TaskConstraints(max_wall_clock_time="PT16H"),
-        command_line=f'/bin/bash -c \"{sys_call}\"',
+        command_line=f'/bin/bash -c {shlex.quote(sys_call)}',
         resource_files=resource_input_files,
         output_files=resource_output_files,
         user_identity=batchmodels.UserIdentity(
@@ -444,9 +445,21 @@ def test_add_tasks():
         ]
     )
 
-    # Check that the correct task was appended to the tasks list
+    # Azure SDK model objects do not implement value-based equality, so
+    # compare the fields that define the submitted task.
     assert len(result_tasks) == 1
-    assert result_tasks[0] == expected_task_add_parameter
+    actual = result_tasks[0]
+    assert actual.id == expected_task_add_parameter.id
+    assert actual.command_line == expected_task_add_parameter.command_line
+    assert actual.constraints.max_wall_clock_time == "PT16H"
+    assert actual.resource_files == resource_input_files
+    assert actual.output_files == resource_output_files
+    assert actual.user_identity.auto_user.elevation_level == \
+        batchmodels.ElevationLevel.admin
+    assert actual.user_identity.auto_user.scope == \
+        batchmodels.AutoUserScope.pool
+    assert actual.environment_settings[0].name == 'CONDA'
+    assert actual.environment_settings[0].value == '/usr/bin/miniconda/bin'
 
 
 def test_prep_output_container():
