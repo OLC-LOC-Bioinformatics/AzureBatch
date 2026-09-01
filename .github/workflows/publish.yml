@@ -219,9 +219,9 @@ jobs:
                   --name "$BUILD_ENV_NAME" \
                   conda-render recipes \
                     --override-channels \
-                    --channel olcbioinformatics \
+                    --channel conda-forge \
                     --channel bioconda \
-                    --channel conda-forge; then
+                    --channel olcbioinformatics; then
                 return 0
               fi
 
@@ -266,9 +266,9 @@ jobs:
                     --package-format 2 \
                     --output \
                     --override-channels \
-                    --channel olcbioinformatics \
-                    --channel bioconda \
                     --channel conda-forge \
+                    --channel bioconda \
+                    --channel olcbioinformatics \
                   > "$output_file"; then
                 return 0
               fi
@@ -335,9 +335,9 @@ jobs:
                   conda-build recipes \
                     --package-format 2 \
                     --override-channels \
-                    --channel olcbioinformatics \
+                    --channel conda-forge \
                     --channel bioconda \
-                    --channel conda-forge; then
+                    --channel olcbioinformatics; then
                 return 0
               fi
 
@@ -397,9 +397,9 @@ jobs:
                   --name "$TEST_ENV_NAME" \
                   --use-local \
                   --override-channels \
-                  --channel olcbioinformatics \
-                  --channel bioconda \
                   --channel conda-forge \
+                  --channel bioconda \
+                  --channel olcbioinformatics \
                   "python=3.12" \
                   "azure_batch=${PACKAGE_VERSION}"; then
                 return 0
