@@ -2,7 +2,8 @@ name: Build and Publish Conda Package
 
 on:
   release:
-    types: [published]
+    types:
+      - published
 
 permissions:
   contents: read
@@ -20,6 +21,17 @@ jobs:
       run:
         shell: bash -el {0}
 
+    env:
+      BUILD_ENV_NAME: azure_batch_build
+      TEST_ENV_NAME: azure_batch_package_test
+
+      # Reduce unnecessary Conda output and make network operations less
+      # sensitive to temporary latency.
+      CONDA_ALWAYS_YES: "true"
+      CONDA_REMOTE_CONNECT_TIMEOUT_SECS: "30"
+      CONDA_REMOTE_READ_TIMEOUT_SECS: "120"
+      CONDA_REMOTE_MAX_RETRIES: "5"
+
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v4
@@ -27,38 +39,97 @@ jobs:
           ref: ${{ github.event.release.tag_name }}
           fetch-depth: 1
 
+      # Only conda-forge is required to create the build environment.
+      # Avoid contacting olcbioinformatics and bioconda during initial setup.
       - name: Set up Conda
         uses: conda-incubator/setup-miniconda@v4
         with:
           activate-environment: azure_batch_build
           python-version: "3.12"
           auto-activate-base: false
-          channels: olcbioinformatics,bioconda,conda-forge
+          channels: conda-forge
           channel-priority: strict
+
+      - name: Configure Conda networking
+        run: |
+          set -euo pipefail
+
+          conda config --set remote_connect_timeout_secs 30
+          conda config --set remote_read_timeout_secs 120
+          conda config --set remote_max_retries 5
+          conda config --set channel_priority strict
+
+          conda config --show \
+            remote_connect_timeout_secs \
+            remote_read_timeout_secs \
+            remote_max_retries \
+            channel_priority
 
       - name: Install pinned build tools
         run: |
           set -euo pipefail
 
-          conda install -y \
-            -n azure_batch_build \
-            --override-channels \
-            -c conda-forge \
-            "python=3.12" \
-            "conda-build=25.1.1" \
-            "anaconda-client=1.14.1"
+          retry_conda() {
+            local max_attempts=4
+            local delay_seconds=30
+            local attempt=1
 
+            while true; do
+              echo "Running Conda command, attempt ${attempt}/${max_attempts}:"
+              printf '  %q' "$@"
+              printf '\n'
+
+              if "$@"; then
+                return 0
+              fi
+
+              if (( attempt >= max_attempts )); then
+                echo "Conda command failed after ${max_attempts} attempts" >&2
+                return 1
+              fi
+
+              echo "Conda command failed on attempt ${attempt}."
+              echo "Clearing the index cache and retrying in ${delay_seconds} seconds."
+
+              conda clean --index-cache --yes || true
+              sleep "$delay_seconds"
+
+              attempt=$((attempt + 1))
+              delay_seconds=$((delay_seconds * 2))
+            done
+          }
+
+          retry_conda \
+            conda install \
+              --yes \
+              --name "$BUILD_ENV_NAME" \
+              --override-channels \
+              --channel conda-forge \
+              "python=3.12" \
+              "conda-build=25.1.1" \
+              "anaconda-client=1.14.1"
+
+          echo "Conda information:"
           conda info
 
-          conda list -n azure_batch_build \
-            python \
-            conda-build \
-            anaconda-client
+          echo "Selected packages in ${BUILD_ENV_NAME}:"
+          conda list --name "$BUILD_ENV_NAME" |
+            grep -E '^(python|conda-build|anaconda-client)[[:space:]]' ||
+            {
+              echo "One or more expected build packages were not found" >&2
+              exit 1
+            }
 
-          conda run -n azure_batch_build \
+          echo "Python version:"
+          conda run --name "$BUILD_ENV_NAME" \
+            python --version
+
+          echo "conda-build version:"
+          conda run --name "$BUILD_ENV_NAME" \
             conda build --version
 
-          conda run -n azure_batch_build \
+          echo "anaconda-client version:"
+          conda run --name "$BUILD_ENV_NAME" \
             anaconda --version
 
       - name: Validate and record release version
@@ -72,8 +143,13 @@ jobs:
             exit 1
           fi
 
+          PACKAGE_VERSION="${RELEASE_TAG#v}"
+
           echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
-          echo "PACKAGE_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+          echo "PACKAGE_VERSION=$PACKAGE_VERSION" >> "$GITHUB_ENV"
+
+          echo "Release tag: $RELEASE_TAG"
+          echo "Package version: $PACKAGE_VERSION"
 
       - name: Download and hash release source
         env:
@@ -83,20 +159,33 @@ jobs:
 
           SOURCE_URL="https://github.com/${REPOSITORY}/archive/refs/tags/${RELEASE_TAG}.tar.gz"
 
+          # curl retries transient HTTP failures, including 429 and 5xx
+          # responses, as well as connection-level failures.
           curl \
             --fail \
             --location \
-            --retry 3 \
+            --retry 5 \
+            --retry-all-errors \
+            --retry-delay 10 \
+            --connect-timeout 30 \
+            --max-time 600 \
             --output source.tar.gz \
             "$SOURCE_URL"
+
+          test -s source.tar.gz
 
           SOURCE_SHA256="$(
             sha256sum source.tar.gz |
               awk '{print $1}'
           )"
 
+          test -n "$SOURCE_SHA256"
+
           echo "SOURCE_URL=$SOURCE_URL" >> "$GITHUB_ENV"
           echo "SOURCE_SHA256=$SOURCE_SHA256" >> "$GITHUB_ENV"
+
+          echo "Source URL: $SOURCE_URL"
+          echo "Source SHA-256: $SOURCE_SHA256"
 
       - name: Render and validate Conda recipe
         run: |
@@ -106,70 +195,232 @@ jobs:
           test -n "$SOURCE_URL"
           test -n "$SOURCE_SHA256"
 
-          conda run -n azure_batch_build \
-            conda render recipes
+          retry_conda() {
+            local max_attempts=4
+            local delay_seconds=30
+            local attempt=1
+
+            while true; do
+              echo "Rendering recipe, attempt ${attempt}/${max_attempts}"
+
+              if conda run --no-capture-output \
+                  --name "$BUILD_ENV_NAME" \
+                  conda render recipes \
+                    --override-channels \
+                    --channel olcbioinformatics \
+                    --channel bioconda \
+                    --channel conda-forge; then
+                return 0
+              fi
+
+              if (( attempt >= max_attempts )); then
+                echo "Recipe rendering failed after ${max_attempts} attempts" >&2
+                return 1
+              fi
+
+              echo "Recipe rendering failed on attempt ${attempt}."
+              echo "Clearing index caches and retrying in ${delay_seconds} seconds."
+
+              conda clean --index-cache --yes || true
+              sleep "$delay_seconds"
+
+              attempt=$((attempt + 1))
+              delay_seconds=$((delay_seconds * 2))
+            done
+          }
+
+          retry_conda
 
       - name: Determine package output path
         run: |
           set -euo pipefail
 
+          output_file="$(mktemp)"
+          trap 'rm -f "$output_file"' EXIT
+
+          retry_output() {
+            local max_attempts=4
+            local delay_seconds=30
+            local attempt=1
+
+            while true; do
+              : > "$output_file"
+
+              echo "Determining output path, attempt ${attempt}/${max_attempts}"
+
+              if conda run --no-capture-output \
+                  --name "$BUILD_ENV_NAME" \
+                  conda build recipes \
+                    --package-format 2 \
+                    --output \
+                    --override-channels \
+                    --channel olcbioinformatics \
+                    --channel bioconda \
+                    --channel conda-forge \
+                  > "$output_file"; then
+                return 0
+              fi
+
+              if (( attempt >= max_attempts )); then
+                echo "Could not determine the package output path after ${max_attempts} attempts" >&2
+                cat "$output_file" >&2 || true
+                return 1
+              fi
+
+              echo "Output-path calculation failed on attempt ${attempt}."
+              echo "Clearing index caches and retrying in ${delay_seconds} seconds."
+
+              conda clean --index-cache --yes || true
+              sleep "$delay_seconds"
+
+              attempt=$((attempt + 1))
+              delay_seconds=$((delay_seconds * 2))
+            done
+          }
+
+          retry_output
+
           PACKAGE_PATH="$(
-            conda run --no-capture-output \
-              -n azure_batch_build \
-              conda build recipes \
-                --package-format 2 \
-                --output |
-              tail -n 1
+            grep -E '\.conda$' "$output_file" |
+              tail -n 1 ||
+              true
           )"
 
           if [[ -z "$PACKAGE_PATH" ]]; then
             echo "Could not determine the Conda package output path" >&2
+            echo "conda build --output returned:" >&2
+            cat "$output_file" >&2
             exit 1
           fi
-
-          echo "PACKAGE_PATH=$PACKAGE_PATH" >> "$GITHUB_ENV"
-          echo "Package will be written to: $PACKAGE_PATH"
 
           if [[ "$PACKAGE_PATH" != *.conda ]]; then
             echo "Expected a .conda package, got: $PACKAGE_PATH" >&2
             exit 1
           fi
 
+          echo "PACKAGE_PATH=$PACKAGE_PATH" >> "$GITHUB_ENV"
+          echo "Package will be written to: $PACKAGE_PATH"
+
       - name: Build and run recipe tests
         run: |
           set -euo pipefail
 
-          conda run -n azure_batch_build \
+          conda run --name "$BUILD_ENV_NAME" \
             conda config --set anaconda_upload no
 
-          conda run --no-capture-output \
-            -n azure_batch_build \
-            conda build recipes \
-              --package-format 2
+          # A failed build can leave work directories behind. Conda-build
+          # normally handles these safely, but clean them before a retry.
+          retry_build() {
+            local max_attempts=3
+            local delay_seconds=30
+            local attempt=1
+
+            while true; do
+              echo "Building package, attempt ${attempt}/${max_attempts}"
+
+              if conda run --no-capture-output \
+                  --name "$BUILD_ENV_NAME" \
+                  conda build recipes \
+                    --package-format 2 \
+                    --override-channels \
+                    --channel olcbioinformatics \
+                    --channel bioconda \
+                    --channel conda-forge; then
+                return 0
+              fi
+
+              if (( attempt >= max_attempts )); then
+                echo "Package build failed after ${max_attempts} attempts" >&2
+                return 1
+              fi
+
+              echo "Package build failed on attempt ${attempt}."
+              echo "Clearing Conda index and build caches before retrying."
+
+              conda clean --index-cache --yes || true
+
+              conda run --name "$BUILD_ENV_NAME" \
+                conda build purge || true
+
+              sleep "$delay_seconds"
+
+              attempt=$((attempt + 1))
+              delay_seconds=$((delay_seconds * 2))
+            done
+          }
+
+          retry_build
 
           if [[ ! -f "$PACKAGE_PATH" ]]; then
             echo "Expected package was not created: $PACKAGE_PATH" >&2
             exit 1
           fi
 
+          echo "Created package:"
+          ls -lh "$PACKAGE_PATH"
+
+          echo "Package SHA-256:"
+          sha256sum "$PACKAGE_PATH"
+
       - name: Test installation from local build
         run: |
           set -euo pipefail
 
-          conda create -y \
-            -n azure_batch_package_test \
-            --use-local \
-            -c olcbioinformatics \
-            -c bioconda \
-            -c conda-forge \
-            "python=3.12" \
-            "azure_batch=${PACKAGE_VERSION}"
+          # Remove an environment left behind by a previous attempt.
+          conda env remove \
+            --name "$TEST_ENV_NAME" \
+            --yes \
+            2>/dev/null || true
 
-          conda run -n azure_batch_package_test \
+          retry_install() {
+            local max_attempts=4
+            local delay_seconds=30
+            local attempt=1
+
+            while true; do
+              echo "Testing local package installation, attempt ${attempt}/${max_attempts}"
+
+              if conda create \
+                  --yes \
+                  --name "$TEST_ENV_NAME" \
+                  --use-local \
+                  --override-channels \
+                  --channel olcbioinformatics \
+                  --channel bioconda \
+                  --channel conda-forge \
+                  "python=3.12" \
+                  "azure_batch=${PACKAGE_VERSION}"; then
+                return 0
+              fi
+
+              conda env remove \
+                --name "$TEST_ENV_NAME" \
+                --yes \
+                2>/dev/null || true
+
+              if (( attempt >= max_attempts )); then
+                echo "Local package installation failed after ${max_attempts} attempts" >&2
+                return 1
+              fi
+
+              echo "Package installation failed on attempt ${attempt}."
+              echo "Clearing index caches and retrying in ${delay_seconds} seconds."
+
+              conda clean --index-cache --yes || true
+              sleep "$delay_seconds"
+
+              attempt=$((attempt + 1))
+              delay_seconds=$((delay_seconds * 2))
+            done
+          }
+
+          retry_install
+
+          conda run --name "$TEST_ENV_NAME" \
             python -c \
               "import azure_batch; print(azure_batch.__file__)"
 
-          conda run -n azure_batch_package_test \
+          conda run --name "$TEST_ENV_NAME" \
             AzureBatch -h
 
       - name: Upload workflow artifact
@@ -186,17 +437,47 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -n "$ANACONDA_API_TOKEN"
+          if [[ -z "${ANACONDA_API_TOKEN:-}" ]]; then
+            echo "OLCBIOINFORMATICS_ANACONDA_API_TOKEN is not configured" >&2
+            exit 1
+          fi
 
           if [[ ! -f "$PACKAGE_PATH" ]]; then
             echo "Package does not exist: $PACKAGE_PATH" >&2
             exit 1
           fi
 
-          conda run --no-capture-output \
-            -n azure_batch_build \
-            anaconda \
-              -t "$ANACONDA_API_TOKEN" \
-              upload \
-              -u olcbioinformatics \
-              "$PACKAGE_PATH"
+          retry_upload() {
+            local max_attempts=4
+            local delay_seconds=30
+            local attempt=1
+
+            while true; do
+              echo "Uploading package, attempt ${attempt}/${max_attempts}"
+
+              if conda run --no-capture-output \
+                  --name "$BUILD_ENV_NAME" \
+                  anaconda \
+                    --token "$ANACONDA_API_TOKEN" \
+                    upload \
+                    --user olcbioinformatics \
+                    "$PACKAGE_PATH"; then
+                return 0
+              fi
+
+              if (( attempt >= max_attempts )); then
+                echo "Package upload failed after ${max_attempts} attempts" >&2
+                return 1
+              fi
+
+              echo "Package upload failed on attempt ${attempt}."
+              echo "Retrying in ${delay_seconds} seconds."
+
+              sleep "$delay_seconds"
+
+              attempt=$((attempt + 1))
+              delay_seconds=$((delay_seconds * 2))
+            done
+          }
+
+          retry_upload
