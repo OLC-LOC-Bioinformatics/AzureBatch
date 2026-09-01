@@ -126,7 +126,7 @@ jobs:
 
           echo "conda-build version:"
           conda run --name "$BUILD_ENV_NAME" \
-            conda build --version
+            conda-build --version
 
           echo "anaconda-client version:"
           conda run --name "$BUILD_ENV_NAME" \
@@ -250,7 +250,7 @@ jobs:
 
               if conda run --no-capture-output \
                   --name "$BUILD_ENV_NAME" \
-                  conda build recipes \
+                  conda-build recipes \
                     --package-format 2 \
                     --output \
                     --override-channels \
@@ -288,7 +288,7 @@ jobs:
 
           if [[ -z "$PACKAGE_PATH" ]]; then
             echo "Could not determine the Conda package output path" >&2
-            echo "conda build --output returned:" >&2
+            echo "conda-build --output returned:" >&2
             cat "$output_file" >&2
             exit 1
           fi
@@ -320,7 +320,7 @@ jobs:
 
               if conda run --no-capture-output \
                   --name "$BUILD_ENV_NAME" \
-                  conda build recipes \
+                  conda-build recipes \
                     --package-format 2 \
                     --override-channels \
                     --channel olcbioinformatics \
@@ -340,7 +340,7 @@ jobs:
               conda clean --index-cache --yes || true
 
               conda run --name "$BUILD_ENV_NAME" \
-                conda build purge || true
+                conda-build purge || true
 
               sleep "$delay_seconds"
 
