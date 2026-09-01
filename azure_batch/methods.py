@@ -9,26 +9,19 @@ tasks, and, finally, download files for Azure batch analyses
 import datetime
 import logging
 import os
-import re
 import shlex
 import sys
 import time
 from glob import glob
 from pathlib import Path
 
-import azure.batch.models as batchmodels
-
 # Third party imports
+import azure.batch.models as batchmodels
 from azure.batch import BatchServiceClient
 from azure.core.exceptions import (
-    ClientAuthenticationError,
-    HttpResponseError,
     ResourceExistsError,
     ResourceNotFoundError,
-    ServiceRequestError,
 )
-from azure.identity import ClientSecretCredential
-from azure.mgmt.compute import ComputeManagementClient
 from azure.storage.blob import (
     AccountSasPermissions,
     BlobSasPermissions,
@@ -132,6 +125,8 @@ class Settings:
         self.azure_account_key = settings["AZURE_ACCOUNT_KEY"]
         self.batch_account_url = settings["BATCH_ACCOUNT_URL"]
         self.batch_account_subnet = settings["BATCH_ACCOUNT_SUBNET"]
+        self.vm_size = None
+        self.security_type = None
         if analysis_type == "COWBAT":
             self.vm_image = settings["VM_IMAGE"]
             self.node_agent_sku_id = settings["COWBAT_NODE_AGENT_SKU"]
@@ -144,6 +139,10 @@ class Settings:
         elif analysis_type == "Nanopore":
             self.vm_image = settings["NANOPORE_IMAGE"]
             self.node_agent_sku_id = settings["NANOPORE_NODE_AGENT_SKU"]
+            self.vm_size = settings["NANOPORE_BATCH_VM_SIZE"]
+            self.security_type = settings.get(
+                "NANOPORE_SECURITY_TYPE", "trustedLaunch"
+            )
         else:
             raise ValueError(f"Unsupported analysis type: {analysis_type}")
         self.vm_secret = settings["VM_SECRET"]
@@ -249,55 +248,37 @@ def create_pool(
     mount_path: str,
     settings: Settings,
 ):
-    """
-    Creates a pool of compute nodes with the specified OS settings.
-    :param batch_service_client: A Batch service client.
-    :param str pool_id: An ID for the new pool
-    :param str vm_size: The size of the VM to use.
-    :param str container_name: The name of the Azure Blob storage container.
-    :param str mount_path: The relative path the container will be mounted in
-    the VM. $AZ_BATCH_NODE_MOUNTS_DIR is where
-    all mount directories reside, so the relative path is the folder to use
-    in that directory
-    :param Settings settings: Class containing environment variables
-    """
-    # Create VM configuration with conditional TrustedLaunch
+    # Create a Batch pool from a Compute Gallery image.
     image_ref = batchmodels.ImageReference(
         virtual_machine_image_id=settings.vm_image,
     )
 
-    # Check if the image requires or supports TrustedLaunch
-    security_requirements = check_image_security_requirements(settings=settings)
-
-    # Configure VM based on security requirements
-    if security_requirements["recommended_security_profile"]:
-        # Set the security type
-        security_type = security_requirements["recommended_security_profile"][
-            "security_type"
-        ]
-
-        # Create the VM configuration object with the security type
-        vm_config = batchmodels.VirtualMachineConfiguration(
-            image_reference=image_ref,
-            node_agent_sku_id=settings.node_agent_sku_id,
-            security_profile=batchmodels.SecurityProfile(security_type=security_type),
-        )
-        logger.info("Configuring VM with security profile: %s", security_type)
-    else:
-        # Create the Vm configuration object without the security type
-        vm_config = batchmodels.VirtualMachineConfiguration(
-            image_reference=image_ref, node_agent_sku_id=settings.node_agent_sku_id
+    security_profile = None
+    if settings.security_type:
+        security_profile = batchmodels.SecurityProfile(
+            security_type=settings.security_type,
         )
         logger.info(
-            "VM configured without security profile - "
-            "TrustedLaunch not supported/required"
+            "Configuring Batch VM with security type: %s",
+            settings.security_type,
         )
+    else:
+        logger.info("Configuring Batch VM without an explicit security type")
 
-    # Create a new pool of compute nodes
+    vm_config = batchmodels.VirtualMachineConfiguration(
+        image_reference=image_ref,
+        node_agent_sku_id=settings.node_agent_sku_id,
+        security_profile=security_profile,
+    )
+
+    effective_vm_size = vm_size or settings.vm_size
+    if not effective_vm_size:
+        raise ValueError("A Batch VM size must be supplied or configured")
+
     new_pool = batchmodels.PoolAddParameter(
         id=pool_id,
         virtual_machine_configuration=vm_config,
-        vm_size=vm_size,
+        vm_size=effective_vm_size,
         network_configuration=batchmodels.NetworkConfiguration(
             subnet_id=settings.batch_account_subnet,
             public_ip_address_configuration=(
@@ -307,6 +288,7 @@ def create_pool(
             ),
         ),
         target_dedicated_nodes=1,
+        task_slots_per_node=1,
         mount_configuration=[
             batchmodels.MountConfiguration(
                 azure_blob_file_system_configuration=(
@@ -321,7 +303,6 @@ def create_pool(
                             "--entry-timeout=240 "
                             "--negative-timeout=120 "
                             "--tmp-path=/mnt/resource/blobfuse2_cache "
-                            "--cache-size-mb=2048 "
                             "--log-level=LOG_WARNING "
                             "--use-attr-cache=true "
                             "--max-concurrency=64 "
@@ -332,118 +313,6 @@ def create_pool(
         ],
     )
     batch_service_client.pool.add(new_pool)
-
-
-def check_image_security_requirements(
-    *,  # Enforce keyword arguments
-    settings: Settings,
-):
-    """Examines an Azure VM image for security requirements.
-
-    Determines if the VM image supports or requires TrustedLaunch security
-    features and extracts the relevant security profile information.
-
-    :param Settings settings: Class containing environment variables
-
-    Returns:
-        dict: Security requirements information with keys:
-            - supports_trusted_launch: If image supports TrustedLaunch
-            - requires_trusted_launch: If image requires TrustedLaunch
-            - security_type: Security type if specified
-            - recommended_security_profile: Recommended profile settings
-    """
-    # Use image_id from settings
-    image_id = settings.vm_image
-
-    # Parse the image ID to extract subscription ID and other components
-    pattern = (
-        r"/subscriptions/([^/]+)/resourceGroups/([^/]+)/providers/"
-        r"Microsoft.Compute/galleries/([^/]+)/images/([^/]+)/"
-        r"versions/([^/]+)"
-    )
-    match = re.match(pattern, image_id)
-
-    if not match:
-        logger.warning(
-            "Invalid image ID format: %s, defaulting to recommended settings", image_id
-        )
-        return {
-            "supports_trusted_launch": True,
-            "recommended_security_profile": {"security_type": "trustedLaunch"},
-        }
-
-    subscription_id, resource_group, gallery_name, image_name, _ = match.groups()
-
-    # Create credential object using settings
-    credential = ClientSecretCredential(
-        tenant_id=settings.vm_tenant,
-        client_id=settings.vm_client_id,
-        client_secret=settings.vm_secret,
-    )
-
-    try:
-        # Create compute client
-        compute_client = ComputeManagementClient(credential, subscription_id)
-
-        # Get the image definition details
-        image_definition = compute_client.gallery_images.get(
-            resource_group, gallery_name, image_name
-        )
-
-        # Default security info
-        security_info = {
-            "supports_trusted_launch": False,
-            "requires_trusted_launch": False,
-            "security_type": None,
-            "recommended_security_profile": None,
-        }
-
-        # Check if the image has security profile information
-        if hasattr(image_definition, "features") and image_definition.features:
-            for feature in image_definition.features:
-                if feature.name == "SecurityType" and "TrustedLaunch" in feature.value:
-                    security_info["supports_trusted_launch"] = True
-                    security_info["security_type"] = "TrustedLaunch"
-                    break
-
-        # Check OS specifics - Ubuntu 22.04+ supports TrustedLaunch
-        if (
-            hasattr(image_definition, "os_type")
-            and image_definition.os_type == "Linux"
-            and "ubuntu" in image_name.lower()
-            and any(
-                version in image_name.lower() for version in ["22.04", "24.04", "26.04"]
-            )
-        ):
-            security_info["supports_trusted_launch"] = True
-
-        # Set recommended security profile based on findings
-        if security_info["supports_trusted_launch"]:
-            security_info["recommended_security_profile"] = {
-                "security_type": "trustedLaunch"
-            }
-
-        logger.info("Image %s security analysis: %s", image_name, security_info)
-        return security_info
-
-    except (
-        ClientAuthenticationError,
-        HttpResponseError,
-        ServiceRequestError,
-        ValueError,
-    ) as exc:
-        logger.warning(
-            "Error checking security requirements: %s, using defaults", str(exc)
-        )
-        # For newer Ubuntu, default to TrustedLaunch
-        if "ubuntu" in image_id.lower() and any(
-            v in image_id.lower() for v in ["22.04", "24.04", "26.04"]
-        ):
-            return {
-                "supports_trusted_launch": True,
-                "recommended_security_profile": {"security_type": "trustedLaunch"},
-            }
-        return {"supports_trusted_launch": False, "recommended_security_profile": None}
 
 
 def create_job(batch_service_client: BatchServiceClient, job_id: str, pool_id: str):
