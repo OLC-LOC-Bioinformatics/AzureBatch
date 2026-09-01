@@ -18,8 +18,10 @@ build:
 
 requirements:
   host:
-    - python >=3.12,<3.14
+    - python 3.12.*
     - pip
+    - setuptools >=61
+    - wheel
   run:
     - python >=3.12,<3.14
     - azure-batch==14.2.0
