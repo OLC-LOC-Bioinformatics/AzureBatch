@@ -40,14 +40,26 @@ jobs:
         run: |
           set -euo pipefail
 
-          conda install -y -n base -c conda-forge \
+          conda install -y \
+            -n azure_batch_build \
+            --override-channels \
+            -c conda-forge \
+            "python=3.12" \
             "conda-build=25.1.1" \
             "anaconda-client=1.14.1"
 
           conda info
-          conda list -n base conda-build anaconda-client
-          conda build --version
-          anaconda --version
+
+          conda list -n azure_batch_build \
+            python \
+            conda-build \
+            anaconda-client
+
+          conda run -n azure_batch_build \
+            conda build --version
+
+          conda run -n azure_batch_build \
+            anaconda --version
 
       - name: Validate and record release version
         env:
@@ -78,7 +90,10 @@ jobs:
             --output source.tar.gz \
             "$SOURCE_URL"
 
-          SOURCE_SHA256="$(sha256sum source.tar.gz | awk '{print $1}')"
+          SOURCE_SHA256="$(
+            sha256sum source.tar.gz |
+              awk '{print $1}'
+          )"
 
           echo "SOURCE_URL=$SOURCE_URL" >> "$GITHUB_ENV"
           echo "SOURCE_SHA256=$SOURCE_SHA256" >> "$GITHUB_ENV"
@@ -91,13 +106,27 @@ jobs:
           test -n "$SOURCE_URL"
           test -n "$SOURCE_SHA256"
 
-          conda render recipes
+          conda run -n azure_batch_build \
+            conda render recipes
 
       - name: Determine package output path
         run: |
           set -euo pipefail
 
-          PACKAGE_PATH="$(conda build recipes --package-format 2 --output)"
+          PACKAGE_PATH="$(
+            conda run --no-capture-output \
+              -n azure_batch_build \
+              conda build recipes \
+                --package-format 2 \
+                --output |
+              tail -n 1
+          )"
+
+          if [[ -z "$PACKAGE_PATH" ]]; then
+            echo "Could not determine the Conda package output path" >&2
+            exit 1
+          fi
+
           echo "PACKAGE_PATH=$PACKAGE_PATH" >> "$GITHUB_ENV"
           echo "Package will be written to: $PACKAGE_PATH"
 
@@ -110,23 +139,38 @@ jobs:
         run: |
           set -euo pipefail
 
-          conda config --set anaconda_upload no
-          conda build recipes --package-format 2
+          conda run -n azure_batch_build \
+            conda config --set anaconda_upload no
 
-          test -f "$PACKAGE_PATH"
+          conda run --no-capture-output \
+            -n azure_batch_build \
+            conda build recipes \
+              --package-format 2
+
+          if [[ ! -f "$PACKAGE_PATH" ]]; then
+            echo "Expected package was not created: $PACKAGE_PATH" >&2
+            exit 1
+          fi
 
       - name: Test installation from local build
         run: |
           set -euo pipefail
 
-          conda create -y -n azure_batch_package_test \
+          conda create -y \
+            -n azure_batch_package_test \
             --use-local \
+            -c olcbioinformatics \
+            -c bioconda \
+            -c conda-forge \
+            "python=3.12" \
             "azure_batch=${PACKAGE_VERSION}"
 
           conda run -n azure_batch_package_test \
-            python -c "import azure_batch; print(azure_batch.__file__)"
+            python -c \
+              "import azure_batch; print(azure_batch.__file__)"
 
-          conda run -n azure_batch_package_test AzureBatch -h
+          conda run -n azure_batch_package_test \
+            AzureBatch -h
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -143,8 +187,16 @@ jobs:
           set -euo pipefail
 
           test -n "$ANACONDA_API_TOKEN"
-          test -f "$PACKAGE_PATH"
 
-          anaconda -t "$ANACONDA_API_TOKEN" upload \
-            -u olcbioinformatics \
-            "$PACKAGE_PATH"
+          if [[ ! -f "$PACKAGE_PATH" ]]; then
+            echo "Package does not exist: $PACKAGE_PATH" >&2
+            exit 1
+          fi
+
+          conda run --no-capture-output \
+            -n azure_batch_build \
+            anaconda \
+              -t "$ANACONDA_API_TOKEN" \
+              upload \
+              -u olcbioinformatics \
+              "$PACKAGE_PATH"
