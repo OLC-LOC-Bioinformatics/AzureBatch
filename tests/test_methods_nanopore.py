@@ -13,7 +13,7 @@ from azure_batch.methods import (
     Settings,
     TqdmUpTo,
     add_tasks,
-    check_image_security_requirements,
+    create_pool,
     generate_sas_url,
     log_output_resource_files,
     parse_resource_input_pattern,
@@ -41,6 +41,7 @@ def settings_values():
         "COWSNPHR_NODE_AGENT_SKU": "batch.node.ubuntu 22.04",
         "NANOPORE_IMAGE": "/images/nanopore/versions/0.0.1",
         "NANOPORE_NODE_AGENT_SKU": "batch.node.ubuntu 24.04",
+        "NANOPORE_BATCH_VM_SIZE": "Standard_NV18ads_A10_v5",
     }
 
 
@@ -104,9 +105,122 @@ def test_settings_selects_analysis_image(analysis_type, image_key, sku_key):
     assert result.vm_client_id == values["VM_CLIENT_ID"]
 
 
+def test_nanopore_settings_default_to_trusted_launch():
+    values = settings_values()
+    result = Settings(values, "Nanopore")
+
+    assert result.security_type == "trustedLaunch"
+    assert result.vm_size == "Standard_NV18ads_A10_v5"
+
+
+def test_nanopore_settings_honor_explicit_security_type():
+    values = settings_values()
+    values["NANOPORE_SECURITY_TYPE"] = "confidentialvm"
+    result = Settings(values, "Nanopore")
+
+    assert result.security_type == "confidentialvm"
+
+
+@pytest.mark.parametrize("analysis_type", ["COWBAT", "AmpliSeq", "COWSNPhR"])
+def test_non_nanopore_settings_do_not_enable_security_profile(analysis_type):
+    result = Settings(settings_values(), analysis_type)
+
+    assert result.security_type is None
+    assert result.vm_size is None
+
+
 def test_settings_rejects_unsupported_analysis_type():
     with pytest.raises(ValueError, match="Unsupported analysis type"):
         Settings(settings_values(), "Unknown")
+
+
+def test_create_pool_applies_nanopore_security_and_vm_defaults():
+    values = settings_values()
+    settings = Settings(values, "Nanopore")
+    client = Mock()
+
+    create_pool(
+        batch_service_client=client,
+        pool_id="nanopore-pool",
+        vm_size=None,
+        container_name="nanopore-runs",
+        mount_path="nanopore-runs",
+        settings=settings,
+    )
+
+    client.pool.add.assert_called_once()
+    pool = client.pool.add.call_args.args[0]
+    vm_config = pool.virtual_machine_configuration
+
+    assert pool.id == "nanopore-pool"
+    assert pool.vm_size == "Standard_NV18ads_A10_v5"
+    assert pool.target_dedicated_nodes == 1
+    assert pool.task_slots_per_node == 1
+    assert pool.network_configuration.subnet_id == values["BATCH_ACCOUNT_SUBNET"]
+    assert (
+        pool.network_configuration.public_ip_address_configuration.provision
+        == "noPublicIPAddresses"
+    )
+    assert vm_config.image_reference.virtual_machine_image_id == values[
+        "NANOPORE_IMAGE"
+    ]
+    assert vm_config.node_agent_sku_id == values["NANOPORE_NODE_AGENT_SKU"]
+    assert vm_config.security_profile.security_type == "trustedLaunch"
+
+    assert len(pool.mount_configuration) == 1
+    blob_mount = pool.mount_configuration[0].azure_blob_file_system_configuration
+    assert blob_mount.account_name == values["AZURE_ACCOUNT_NAME"]
+    assert blob_mount.container_name == "nanopore-runs"
+    assert blob_mount.relative_mount_path == "nanopore-runs"
+
+
+def test_create_pool_prefers_explicit_vm_size():
+    settings = Settings(settings_values(), "Nanopore")
+    client = Mock()
+
+    create_pool(
+        batch_service_client=client,
+        pool_id="nanopore-pool",
+        vm_size="Standard_D4ds_v5",
+        container_name="nanopore-runs",
+        mount_path="nanopore-runs",
+        settings=settings,
+    )
+
+    pool = client.pool.add.call_args.args[0]
+    assert pool.vm_size == "Standard_D4ds_v5"
+
+
+def test_create_pool_omits_security_profile_for_existing_workflows():
+    settings = Settings(settings_values(), "COWBAT")
+    client = Mock()
+
+    create_pool(
+        batch_service_client=client,
+        pool_id="cowbat-pool",
+        vm_size="Standard_D32s_v3",
+        container_name="cowbat-run",
+        mount_path="cowbat-run",
+        settings=settings,
+    )
+
+    pool = client.pool.add.call_args.args[0]
+    assert pool.vm_size == "Standard_D32s_v3"
+    assert pool.virtual_machine_configuration.security_profile is None
+
+
+def test_create_pool_rejects_missing_vm_size():
+    settings = Settings(settings_values(), "COWBAT")
+
+    with pytest.raises(ValueError, match="Batch VM size"):
+        create_pool(
+            batch_service_client=Mock(),
+            pool_id="cowbat-pool",
+            vm_size=None,
+            container_name="cowbat-run",
+            mount_path="cowbat-run",
+            settings=settings,
+        )
 
 
 def test_generate_sas_url_for_blob_and_container():
@@ -125,7 +239,8 @@ def test_generate_sas_url_for_blob_and_container():
         sas_token="token",
     )
     assert blob_url == (
-        "https://storage.blob.core.windows.net/nanopore-runs/1/manifests/abc.json?token"
+        "https://storage.blob.core.windows.net/"
+        "nanopore-runs/1/manifests/abc.json?token"
     )
     assert container_url == (
         "https://storage.blob.core.windows.net/nanopore-runs?token"
@@ -156,7 +271,7 @@ def test_prep_output_container_returns_container_sas(mock_generate):
     settings = Mock(azure_account_name="storage", azure_account_key="key")
     result = prep_output_container("nanopore-runs", settings, client)
     client.create_container.assert_called_once_with(name="nanopore-runs")
-    assert result == ("https://storage.blob.core.windows.net/nanopore-runs?sas-token")
+    assert result == "https://storage.blob.core.windows.net/nanopore-runs?sas-token"
     assert mock_generate.call_args.kwargs["permission"].read is True
     assert mock_generate.call_args.kwargs["permission"].write is True
 
@@ -223,7 +338,11 @@ def test_wait_for_tasks_to_complete_returns_when_all_complete():
         Mock(state=batchmodels.TaskState.completed),
     ]
     assert (
-        wait_for_tasks_to_complete(client, "job-id", datetime.timedelta(seconds=1))
+        wait_for_tasks_to_complete(
+            client,
+            "job-id",
+            datetime.timedelta(seconds=1),
+        )
         is True
     )
 
@@ -232,30 +351,8 @@ def test_wait_for_tasks_to_complete_times_out():
     client = Mock()
     client.task.list.return_value = [Mock(state=batchmodels.TaskState.running)]
     with pytest.raises(RuntimeError, match="did not reach 'Completed'"):
-        wait_for_tasks_to_complete(client, "job-id", datetime.timedelta(seconds=0))
-
-
-@patch("azure_batch.methods.ComputeManagementClient")
-@patch("azure_batch.methods.ClientSecretCredential")
-def test_image_security_uses_gallery_trusted_launch(
-    _mock_credential, mock_compute_client
-):
-    image = Mock()
-    feature = Mock()
-    feature.name = "SecurityType"
-    feature.value = "TrustedLaunch"
-    image.features = [feature]
-    image.os_type = "Linux"
-    mock_compute_client.return_value.gallery_images.get.return_value = image
-    settings = Mock(
-        vm_image=(
-            "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Compute/"
-            "galleries/development/images/nanopore/versions/0.0.1"
-        ),
-        vm_tenant="tenant",
-        vm_client_id="client",
-        vm_secret="secret",
-    )
-    result = check_image_security_requirements(settings=settings)
-    assert result["supports_trusted_launch"] is True
-    assert result["recommended_security_profile"] == {"security_type": "trustedLaunch"}
+        wait_for_tasks_to_complete(
+            client,
+            "job-id",
+            datetime.timedelta(seconds=0),
+        )
