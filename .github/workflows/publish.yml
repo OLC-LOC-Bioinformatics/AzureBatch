@@ -25,8 +25,7 @@ jobs:
       BUILD_ENV_NAME: azure_batch_build
       TEST_ENV_NAME: azure_batch_package_test
 
-      # Reduce unnecessary Conda output and make network operations less
-      # sensitive to temporary latency.
+      # Make Conda network operations less sensitive to temporary latency.
       CONDA_ALWAYS_YES: "true"
       CONDA_REMOTE_CONNECT_TIMEOUT_SECS: "30"
       CONDA_REMOTE_READ_TIMEOUT_SECS: "120"
@@ -109,9 +108,6 @@ jobs:
               "conda-build=25.1.1" \
               "anaconda-client=1.14.1"
 
-          echo "Conda information:"
-          conda info
-
           echo "Selected packages in ${BUILD_ENV_NAME}:"
           conda list --name "$BUILD_ENV_NAME" |
             grep -E '^(python|conda-build|anaconda-client)[[:space:]]' ||
@@ -120,9 +116,10 @@ jobs:
               exit 1
             }
 
-          echo "Python version:"
+          echo "Build-environment details:"
           conda run --name "$BUILD_ENV_NAME" \
-            python --version
+            python -c \
+              "import sys; print('Python:', sys.version); print('Prefix:', sys.prefix)"
 
           echo "conda-build version:"
           conda run --name "$BUILD_ENV_NAME" \
@@ -130,7 +127,16 @@ jobs:
 
           echo "anaconda-client version:"
           conda run --name "$BUILD_ENV_NAME" \
-            anaconda --version
+            python -c \
+              "from importlib.metadata import version; print(version('anaconda-client'))"
+
+          echo "Validating anaconda-client CLI:"
+          conda run --name "$BUILD_ENV_NAME" \
+            anaconda --help >/dev/null
+
+          echo "Validating anaconda upload command:"
+          conda run --name "$BUILD_ENV_NAME" \
+            anaconda upload --help >/dev/null
 
       - name: Validate and record release version
         env:
@@ -159,8 +165,8 @@ jobs:
 
           SOURCE_URL="https://github.com/${REPOSITORY}/archive/refs/tags/${RELEASE_TAG}.tar.gz"
 
-          # curl retries transient HTTP failures, including 429 and 5xx
-          # responses, as well as connection-level failures.
+          # Retry transient HTTP failures, including 429 and 5xx responses,
+          # as well as connection-level failures.
           curl \
             --fail \
             --location \
@@ -172,14 +178,20 @@ jobs:
             --output source.tar.gz \
             "$SOURCE_URL"
 
-          test -s source.tar.gz
+          if [[ ! -s source.tar.gz ]]; then
+            echo "Downloaded source archive is missing or empty" >&2
+            exit 1
+          fi
 
           SOURCE_SHA256="$(
             sha256sum source.tar.gz |
               awk '{print $1}'
           )"
 
-          test -n "$SOURCE_SHA256"
+          if [[ -z "$SOURCE_SHA256" ]]; then
+            echo "Could not calculate the source archive SHA-256" >&2
+            exit 1
+          fi
 
           echo "SOURCE_URL=$SOURCE_URL" >> "$GITHUB_ENV"
           echo "SOURCE_SHA256=$SOURCE_SHA256" >> "$GITHUB_ENV"
@@ -195,7 +207,7 @@ jobs:
           test -n "$SOURCE_URL"
           test -n "$SOURCE_SHA256"
 
-          retry_conda() {
+          retry_render() {
             local max_attempts=4
             local delay_seconds=30
             local attempt=1
@@ -205,7 +217,7 @@ jobs:
 
               if conda run --no-capture-output \
                   --name "$BUILD_ENV_NAME" \
-                  conda render recipes \
+                  conda-render recipes \
                     --override-channels \
                     --channel olcbioinformatics \
                     --channel bioconda \
@@ -229,7 +241,7 @@ jobs:
             done
           }
 
-          retry_conda
+          retry_render
 
       - name: Determine package output path
         run: |
@@ -308,8 +320,8 @@ jobs:
           conda run --name "$BUILD_ENV_NAME" \
             conda config --set anaconda_upload no
 
-          # A failed build can leave work directories behind. Conda-build
-          # normally handles these safely, but clean them before a retry.
+          # A failed build can leave work directories behind. Clean these
+          # directories before retrying.
           retry_build() {
             local max_attempts=3
             local delay_seconds=30
@@ -366,7 +378,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Remove an environment left behind by a previous attempt.
+          # Remove an environment left behind by an earlier attempt.
           conda env remove \
             --name "$TEST_ENV_NAME" \
             --yes \
