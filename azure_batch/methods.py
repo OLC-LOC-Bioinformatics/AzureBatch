@@ -40,6 +40,28 @@ __author__ = "adamkoziol"
 logger = logging.getLogger(__name__)
 
 
+def parse_boolean_setting(value, default=None):
+    """Convert a configuration value to a boolean."""
+    if value is None:
+        return default
+
+    if isinstance(value, bool):
+        return value
+
+    normalized = str(value).strip().lower()
+
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+
+    raise ValueError(
+        "Unsupported boolean setting: "
+        f"{value!r}. Expected true, false, yes, no, 1, 0, on, or off."
+    )
+
+
 class TqdmUpTo(tqdm):
     """
     A subclass of tqdm providing an `update_to` method.
@@ -127,6 +149,8 @@ class Settings:
         self.batch_account_subnet = settings["BATCH_ACCOUNT_SUBNET"]
         self.vm_size = None
         self.security_type = None
+        self.secure_boot_enabled = None
+        self.v_tpm_enabled = None
         if analysis_type == "COWBAT":
             self.vm_image = settings["VM_IMAGE"]
             self.node_agent_sku_id = settings["COWBAT_NODE_AGENT_SKU"]
@@ -141,7 +165,16 @@ class Settings:
             self.node_agent_sku_id = settings["NANOPORE_NODE_AGENT_SKU"]
             self.vm_size = settings["NANOPORE_BATCH_VM_SIZE"]
             self.security_type = settings.get(
-                "NANOPORE_SECURITY_TYPE", "trustedLaunch"
+                "NANOPORE_SECURITY_TYPE",
+                "trustedLaunch",
+            )
+            self.secure_boot_enabled = parse_boolean_setting(
+                settings.get("NANOPORE_SECURE_BOOT_ENABLED"),
+                default=False,
+            )
+            self.v_tpm_enabled = parse_boolean_setting(
+                settings.get("NANOPORE_VTPM_ENABLED"),
+                default=False,
             )
         else:
             raise ValueError(f"Unsupported analysis type: {analysis_type}")
@@ -248,22 +281,59 @@ def create_pool(
     mount_path: str,
     settings: Settings,
 ):
+    """
+    Creates a new Azure Batch pool with the specified configuration.
+
+    :param BatchServiceClient batch_service_client: The Batch service client
+    :param str pool_id: The ID of the pool to create
+    :param str vm_size: The size of the virtual machines in the pool
+    :param str container_name: The name of the Azure Blob container to mount
+    :param str mount_path: The path at which to mount the Azure Blob container
+    :param Settings settings: The settings object containing configuration
+    details
+    """
+    
     # Create a Batch pool from a Compute Gallery image.
     image_ref = batchmodels.ImageReference(
         virtual_machine_image_id=settings.vm_image,
     )
 
+    security_type = getattr(settings, "security_type", None)
+    secure_boot_enabled = getattr(
+        settings,
+        "secure_boot_enabled",
+        None,
+    )
+    v_tpm_enabled = getattr(
+        settings,
+        "v_tpm_enabled",
+        None,
+    )
+
     security_profile = None
-    if settings.security_type:
+    if security_type:
+        uefi_settings = None
+        if secure_boot_enabled is not None or v_tpm_enabled is not None:
+            uefi_settings = batchmodels.UefiSettings(
+                secure_boot_enabled=secure_boot_enabled,
+                v_tpm_enabled=v_tpm_enabled,
+            )
+
         security_profile = batchmodels.SecurityProfile(
-            security_type=settings.security_type,
+            security_type=security_type,
+            uefi_settings=uefi_settings,
         )
         logger.info(
-            "Configuring Batch VM with security type: %s",
-            settings.security_type,
+            "Configuring Batch VM security: type=%s, "
+            "secure_boot_enabled=%s, v_tpm_enabled=%s",
+            security_type,
+            secure_boot_enabled,
+            v_tpm_enabled,
         )
     else:
-        logger.info("Configuring Batch VM without an explicit security type")
+        logger.info(
+            "Configuring Batch VM without an explicit security profile"
+        )
 
     vm_config = batchmodels.VirtualMachineConfiguration(
         image_reference=image_ref,

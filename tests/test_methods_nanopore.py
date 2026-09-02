@@ -16,6 +16,7 @@ from azure_batch.methods import (
     create_pool,
     generate_sas_url,
     log_output_resource_files,
+    parse_boolean_setting,
     parse_resource_input_pattern,
     prep_output_container,
     read_command_file,
@@ -42,6 +43,9 @@ def settings_values():
         "NANOPORE_IMAGE": "/images/nanopore/versions/0.0.1",
         "NANOPORE_NODE_AGENT_SKU": "batch.node.ubuntu 24.04",
         "NANOPORE_BATCH_VM_SIZE": "Standard_NV18ads_A10_v5",
+        "NANOPORE_SECURITY_TYPE": "trustedLaunch",
+        "NANOPORE_SECURE_BOOT_ENABLED": "false",
+        "NANOPORE_VTPM_ENABLED": "false",
     }
 
 
@@ -127,6 +131,8 @@ def test_non_nanopore_settings_do_not_enable_security_profile(analysis_type):
 
     assert result.security_type is None
     assert result.vm_size is None
+    assert result.secure_boot_enabled is None
+    assert result.v_tpm_enabled is None
 
 
 def test_settings_rejects_unsupported_analysis_type():
@@ -166,12 +172,75 @@ def test_create_pool_applies_nanopore_security_and_vm_defaults():
     ]
     assert vm_config.node_agent_sku_id == values["NANOPORE_NODE_AGENT_SKU"]
     assert vm_config.security_profile.security_type == "trustedLaunch"
+    assert (
+        vm_config.security_profile.uefi_settings.secure_boot_enabled
+        is False
+    )
+    assert (
+        vm_config.security_profile.uefi_settings.v_tpm_enabled
+        is False
+    )
 
     assert len(pool.mount_configuration) == 1
     blob_mount = pool.mount_configuration[0].azure_blob_file_system_configuration
     assert blob_mount.account_name == values["AZURE_ACCOUNT_NAME"]
     assert blob_mount.container_name == "nanopore-runs"
     assert blob_mount.relative_mount_path == "nanopore-runs"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, True),
+        (False, False),
+        ("true", True),
+        ("false", False),
+        ("TRUE", True),
+        ("FALSE", False),
+        ("yes", True),
+        ("no", False),
+        ("1", True),
+        ("0", False),
+        ("on", True),
+        ("off", False),
+    ],
+)
+def test_parse_boolean_setting(value, expected):
+    assert parse_boolean_setting(value) is expected
+
+
+def test_nanopore_settings_disable_secure_boot_and_vtpm():
+    result = Settings(settings_values(), "Nanopore")
+
+    assert result.security_type == "trustedLaunch"
+    assert result.secure_boot_enabled is False
+    assert result.v_tpm_enabled is False
+
+def test_nanopore_settings_honor_explicit_uefi_values():
+    values = settings_values()
+    values["NANOPORE_SECURE_BOOT_ENABLED"] = "true"
+    values["NANOPORE_VTPM_ENABLED"] = "yes"
+
+    result = Settings(values, "Nanopore")
+
+    assert result.secure_boot_enabled is True
+    assert result.v_tpm_enabled is True
+
+@pytest.mark.parametrize(
+    ("default", "expected"),
+    [
+        (True, True),
+        (False, False),
+        (None, None),
+    ],
+)
+def test_parse_boolean_setting_uses_default(default, expected):
+    assert parse_boolean_setting(None, default=default) is expected
+
+
+def test_parse_boolean_setting_rejects_invalid_value():
+    with pytest.raises(ValueError, match="Unsupported boolean setting"):
+        parse_boolean_setting("maybe")
 
 
 def test_create_pool_prefers_explicit_vm_size():
