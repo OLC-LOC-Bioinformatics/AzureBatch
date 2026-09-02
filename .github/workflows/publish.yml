@@ -378,6 +378,39 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [[ ! -f "$PACKAGE_PATH" ]]; then
+            echo "Local package does not exist: $PACKAGE_PATH" >&2
+            exit 1
+          fi
+
+          package_directory="$(dirname "$PACKAGE_PATH")"
+          local_channel_root="$(dirname "$package_directory")"
+          local_channel_url="file://${local_channel_root}"
+
+          echo "Local package: $PACKAGE_PATH"
+          echo "Local package directory: $package_directory"
+          echo "Local channel root: $local_channel_root"
+          echo "Local channel URL: $local_channel_url"
+
+          echo "Local channel contents:"
+          find "$local_channel_root" \
+            -maxdepth 2 \
+            -type f \
+            \( -name '*.conda' -o -name 'repodata.json' \) \
+            -print |
+            sort
+
+          # Ensure channel metadata includes the newly built package.
+          conda run --no-capture-output \
+            --name "$BUILD_ENV_NAME" \
+            conda-index "$local_channel_root"
+
+          echo "Confirming that the package is visible in the local channel:"
+          conda search \
+            --override-channels \
+            --channel "$local_channel_url" \
+            "azure_batch=${PACKAGE_VERSION}"
+
           # Remove an environment left behind by an earlier attempt.
           conda env remove \
             --name "$TEST_ENV_NAME" \
@@ -395,8 +428,8 @@ jobs:
               if conda create \
                   --yes \
                   --name "$TEST_ENV_NAME" \
-                  --use-local \
                   --override-channels \
+                  --channel "$local_channel_url" \
                   --channel conda-forge \
                   --channel bioconda \
                   --channel olcbioinformatics \
@@ -427,6 +460,11 @@ jobs:
           }
 
           retry_install
+
+          echo "Installed AzureBatch package:"
+          conda list \
+            --name "$TEST_ENV_NAME" \
+            "azure_batch"
 
           conda run --name "$TEST_ENV_NAME" \
             python -c \
