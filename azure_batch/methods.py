@@ -148,9 +148,24 @@ class Settings:
         self.batch_account_url = settings["BATCH_ACCOUNT_URL"]
         self.batch_account_subnet = settings["BATCH_ACCOUNT_SUBNET"]
         self.vm_size = None
-        self.security_type = None
-        self.secure_boot_enabled = None
-        self.v_tpm_enabled = None
+
+        # All current FoodPort Compute Gallery images require Trusted Launch.
+        self.security_type = settings.get(
+            "BATCH_SECURITY_TYPE",
+            "trustedLaunch",
+        )
+
+        # Leave general UEFI settings unspecified unless explicitly configured.
+        # Azure will apply the normal Trusted Launch defaults.
+        self.secure_boot_enabled = parse_boolean_setting(
+            settings.get("BATCH_SECURE_BOOT_ENABLED"),
+            default=None,
+        )
+
+        self.v_tpm_enabled = parse_boolean_setting(
+            settings.get("BATCH_VTPM_ENABLED"),
+            default=None,
+        )
         if analysis_type == "COWBAT":
             self.vm_image = settings["VM_IMAGE"]
             self.node_agent_sku_id = settings["COWBAT_NODE_AGENT_SKU"]
@@ -181,6 +196,17 @@ class Settings:
         self.vm_secret = settings["VM_SECRET"]
         self.vm_tenant = settings["VM_TENANT"]
         self.vm_client_id = settings["VM_CLIENT_ID"]
+
+        # Store analysis type for logging purposes
+        self.analysis_type = analysis_type
+        logger.info(
+            "Configuring %s Batch VM security: type=%s, "
+            "secure_boot_enabled=%s, v_tpm_enabled=%s",
+            self.analysis_type,
+            self.security_type,
+            self.secure_boot_enabled,
+            self.v_tpm_enabled,
+        )
 
 
 def print_batch_exception(batch_exception: batchmodels.BatchErrorException):

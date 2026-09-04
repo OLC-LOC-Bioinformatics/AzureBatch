@@ -31,6 +31,7 @@ def settings_values():
         "AZURE_ACCOUNT_KEY": "storage-key",
         "BATCH_ACCOUNT_URL": "https://batch.example.test",
         "BATCH_ACCOUNT_SUBNET": "/subscriptions/test/subnets/batch",
+        "BATCH_SECURITY_TYPE": "trustedLaunch",
         "VM_SECRET": "secret",
         "VM_CLIENT_ID": "client-id",
         "VM_TENANT": "tenant-id",
@@ -126,10 +127,10 @@ def test_nanopore_settings_honor_explicit_security_type():
 
 
 @pytest.mark.parametrize("analysis_type", ["COWBAT", "AmpliSeq", "COWSNPhR"])
-def test_non_nanopore_settings_do_not_enable_security_profile(analysis_type):
+def test_non_nanopore_settings_use_default_trusted_launch(analysis_type):
     result = Settings(settings_values(), analysis_type)
 
-    assert result.security_type is None
+    assert result.security_type == "trustedLaunch"
     assert result.vm_size is None
     assert result.secure_boot_enabled is None
     assert result.v_tpm_enabled is None
@@ -172,14 +173,8 @@ def test_create_pool_applies_nanopore_security_and_vm_defaults():
     ]
     assert vm_config.node_agent_sku_id == values["NANOPORE_NODE_AGENT_SKU"]
     assert vm_config.security_profile.security_type == "trustedLaunch"
-    assert (
-        vm_config.security_profile.uefi_settings.secure_boot_enabled
-        is False
-    )
-    assert (
-        vm_config.security_profile.uefi_settings.v_tpm_enabled
-        is False
-    )
+    assert vm_config.security_profile.uefi_settings.secure_boot_enabled is False
+    assert vm_config.security_profile.uefi_settings.v_tpm_enabled is False
 
     assert len(pool.mount_configuration) == 1
     blob_mount = pool.mount_configuration[0].azure_blob_file_system_configuration
@@ -216,6 +211,7 @@ def test_nanopore_settings_disable_secure_boot_and_vtpm():
     assert result.secure_boot_enabled is False
     assert result.v_tpm_enabled is False
 
+
 def test_nanopore_settings_honor_explicit_uefi_values():
     values = settings_values()
     values["NANOPORE_SECURE_BOOT_ENABLED"] = "true"
@@ -225,6 +221,7 @@ def test_nanopore_settings_honor_explicit_uefi_values():
 
     assert result.secure_boot_enabled is True
     assert result.v_tpm_enabled is True
+
 
 @pytest.mark.parametrize(
     ("default", "expected"),
@@ -260,22 +257,37 @@ def test_create_pool_prefers_explicit_vm_size():
     assert pool.vm_size == "Standard_D4ds_v5"
 
 
-def test_create_pool_omits_security_profile_for_existing_workflows():
-    settings = Settings(settings_values(), "COWBAT")
+@pytest.mark.parametrize(
+    ("analysis_type", "vm_size"),
+    [
+        ("COWBAT", "Standard_D32s_v3"),
+        ("AmpliSeq", "Standard_D16s_v5"),
+        ("COWSNPhR", "Standard_D32s_v5"),
+    ],
+)
+def test_create_pool_applies_trusted_launch_to_existing_workflows(
+    analysis_type,
+    vm_size,
+):
+    settings = Settings(settings_values(), analysis_type)
     client = Mock()
 
     create_pool(
         batch_service_client=client,
-        pool_id="cowbat-pool",
-        vm_size="Standard_D32s_v3",
-        container_name="cowbat-run",
-        mount_path="cowbat-run",
+        pool_id="test-pool",
+        vm_size=vm_size,
+        container_name="test-run",
+        mount_path="test-run",
         settings=settings,
     )
 
     pool = client.pool.add.call_args.args[0]
-    assert pool.vm_size == "Standard_D32s_v3"
-    assert pool.virtual_machine_configuration.security_profile is None
+    profile = pool.virtual_machine_configuration.security_profile
+
+    assert pool.vm_size == vm_size
+    assert profile is not None
+    assert profile.security_type == "trustedLaunch"
+    assert profile.uefi_settings is None
 
 
 def test_create_pool_rejects_missing_vm_size():

@@ -48,6 +48,32 @@ def load_env_variables():
     }
 
 
+def settings_values():
+    """Return a complete non-secret settings mapping for unit tests."""
+    return {
+        "AZURE_ACCOUNT_NAME": "storage",
+        "AZURE_ACCOUNT_KEY": "storage-key",
+        "BATCH_ACCOUNT_URL": "https://batch.example.test",
+        "BATCH_ACCOUNT_SUBNET": "/subscriptions/test/subnets/batch",
+        "BATCH_SECURITY_TYPE": "trustedLaunch",
+        "VM_SECRET": "secret",
+        "VM_CLIENT_ID": "client-id",
+        "VM_TENANT": "tenant-id",
+        "VM_IMAGE": "/images/cowbat/versions/1",
+        "COWBAT_NODE_AGENT_SKU": "batch.node.ubuntu 22.04",
+        "AMPLISEQ_IMAGE": "/images/ampliseq/versions/1",
+        "AMPLISEQ_NODE_AGENT_SKU": "batch.node.ubuntu 20.04",
+        "COWSNPHR_IMAGE": "/images/cowsnphr/versions/1",
+        "COWSNPHR_NODE_AGENT_SKU": "batch.node.ubuntu 22.04",
+        "NANOPORE_IMAGE": "/images/nanopore/versions/0.0.1",
+        "NANOPORE_NODE_AGENT_SKU": "batch.node.ubuntu 24.04",
+        "NANOPORE_BATCH_VM_SIZE": "Standard_NV18ads_A10_v5",
+        "NANOPORE_SECURITY_TYPE": "trustedLaunch",
+        "NANOPORE_SECURE_BOOT_ENABLED": "false",
+        "NANOPORE_VTPM_ENABLED": "false",
+    }
+
+
 def create_blob_service_client(env_vars) -> BlobServiceClient:
     """Create a BlobServiceClient using the supplied environment mapping."""
     return BlobServiceClient(
@@ -104,7 +130,9 @@ class TestSettings:
         assert settings_obj.batch_account_url == "test_batch_account_url"
         assert settings_obj.vm_secret == "test_vm_secret"
         assert settings_obj.vm_tenant == "test_vm_tenant"
-        assert settings_obj.security_type is None
+        assert settings_obj.security_type == "trustedLaunch"
+        assert settings_obj.secure_boot_enabled is None
+        assert settings_obj.v_tpm_enabled is None
         assert settings_obj.vm_size is None
 
 
@@ -236,7 +264,9 @@ def test_create_pool():
     settings.azure_account_key = "test_account_key"
     settings.node_agent_sku_id = "batch.node.ubuntu 20.04"
     settings.batch_account_subnet = "test_subnet"
-    settings.security_type = None
+    settings.security_type = "trustedLaunch"
+    settings.secure_boot_enabled = None
+    settings.v_tpm_enabled = None
     settings.vm_size = None
 
     create_pool(
@@ -259,7 +289,10 @@ def test_create_pool():
         actual_call.virtual_machine_configuration.node_agent_sku_id
         == "batch.node.ubuntu 20.04"
     )
-    assert actual_call.virtual_machine_configuration.security_profile is None
+    security_profile = actual_call.virtual_machine_configuration.security_profile
+    assert security_profile is not None
+    assert security_profile.security_type == "trustedLaunch"
+    assert security_profile.uefi_settings is None
     assert actual_call.vm_size == "test_vm_size"
     assert actual_call.target_dedicated_nodes == 1
     assert actual_call.task_slots_per_node == 1
@@ -374,3 +407,36 @@ def test_prep_output_container(mock_generate_container_sas):
         "https://storage.blob.core.windows.net/"
         "test-output-container?sas-token"
     )
+
+
+def test_all_analysis_types_use_trusted_launch():
+    """Test that all analysis types use Trusted Launch."""
+    values = settings_values()
+
+    for analysis_type in (
+        "COWBAT",
+        "AmpliSeq",
+        "COWSNPhR",
+        "Nanopore",
+    ):
+        result = Settings(
+            settings=values,
+            analysis_type=analysis_type,
+        )
+        assert result.security_type == "trustedLaunch"
+
+
+def test_general_uefi_settings_can_be_configured():
+    """Test that general UEFI settings can be configured."""
+    configured = settings_values()
+    configured["BATCH_SECURE_BOOT_ENABLED"] = "true"
+    configured["BATCH_VTPM_ENABLED"] = "true"
+
+    result = Settings(
+        settings=configured,
+        analysis_type="COWBAT",
+    )
+
+    assert result.security_type == "trustedLaunch"
+    assert result.secure_boot_enabled is True
+    assert result.v_tpm_enabled is True
