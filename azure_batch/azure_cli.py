@@ -201,6 +201,7 @@ class AzureBatch:
                         tasks=tasks,
                         resource_input_files=[],
                         resource_output_files=[],
+                        settings=self.settings,
                         sys_call=cmd,
                     )
                 else:
@@ -209,6 +210,7 @@ class AzureBatch:
                         tasks=tasks,
                         resource_input_files=[],
                         resource_output_files=output_files,
+                        settings=self.settings,
                         sys_call=cmd,
                     )
                 # Append the task ID to the list of task IDs
@@ -368,15 +370,13 @@ def cli():
         metavar="system call file",
         required=True,
         type=str,
-        help="Name and path of file containing system call(s) to run in "
-        "task(s) (one per line). The command(s) must include any environment "
-        "activation steps e.g. \n"
-        "source $CONDA/activate /envs/cowbat && assembly_pipeline.py "
-        "-s $AZ_BATCH_NODE_MOUNTS_DIR/container-name "
-        "-r /databases/0.5.0.23\n Note that the $CONDA directory is assumed "
-        "to be /usr/bin/miniconda/bin and the $AZ_BATCH_NODE_MOUNTS_DIR is "
-        "a default environment variable where all mount directories reside. "
-        "For Ubuntu, this location is /mnt/batch/tasks/fsmounts",
+        help=(
+            "Name and path of a file containing system calls to run in tasks, "
+            "with one command per line. The configured runtime environment is "
+            "added to PATH automatically. Existing Conda-based workflows may "
+            "continue to use $CONDA/activate. Nanopore micromamba workflows "
+            "should directly call python, dorado, minimap2, or samtools."
+        ),
     )
     parser.add_argument(
         "-s",
@@ -419,7 +419,7 @@ def cli():
         "-vm",
         "--vm_size",
         metavar="vm_size",
-        default="Standard_D32s_v3",
+        default=None,
         choices=[
             "Standard_D64s_v3",
             "Standard_D48s_v3",
@@ -429,7 +429,9 @@ def cli():
             "Standard_D4ds_v5",
             "Standard_NV18ads_A10_v5",
         ],
-        help="Size of VM to use. Default is 'Standard_D32s_v3'",
+        help="Size of VM to use. If omitted, the configured analysis-specific "
+        "VM size is used. Existing workflows must supply a VM size unless a "
+        "default is configured.",
     )
     parser.add_argument(
         "-p",

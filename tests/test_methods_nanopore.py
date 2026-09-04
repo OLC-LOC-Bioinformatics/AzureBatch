@@ -31,6 +31,7 @@ def settings_values():
         "AZURE_ACCOUNT_KEY": "storage-key",
         "BATCH_ACCOUNT_URL": "https://batch.example.test",
         "BATCH_ACCOUNT_SUBNET": "/subscriptions/test/subnets/batch",
+        "BATCH_VM_SIZE": "Standard_D32s_v3",
         "BATCH_SECURITY_TYPE": "trustedLaunch",
         "VM_SECRET": "secret",
         "VM_CLIENT_ID": "client-id",
@@ -47,6 +48,16 @@ def settings_values():
         "NANOPORE_SECURITY_TYPE": "trustedLaunch",
         "NANOPORE_SECURE_BOOT_ENABLED": "false",
         "NANOPORE_VTPM_ENABLED": "false",
+        "NANOPORE_CONDA_PATH": "/opt/micromamba/bin",
+        "NANOPORE_MAMBA_ROOT_PREFIX": "/opt/micromamba/root",
+        "NANOPORE_RUNTIME_BIN_PATH": (
+            "/opt/micromamba/root/envs/poresippr/bin:"
+            "/opt/micromamba/bin:"
+            "/opt/ont/dorado/bin:"
+            "/usr/local/bin:"
+            "/usr/bin:"
+            "/bin"
+        ),
     }
 
 
@@ -126,14 +137,29 @@ def test_nanopore_settings_honor_explicit_security_type():
     assert result.security_type == "confidentialvm"
 
 
-@pytest.mark.parametrize("analysis_type", ["COWBAT", "AmpliSeq", "COWSNPhR"])
-def test_non_nanopore_settings_use_default_trusted_launch(analysis_type):
-    result = Settings(settings_values(), analysis_type)
+@pytest.mark.parametrize(
+    "analysis_type",
+    [
+        "COWBAT",
+        "AmpliSeq",
+        "COWSNPhR",
+    ],
+)
+def test_non_nanopore_settings_use_default_trusted_launch(
+    analysis_type,
+):
+    result = Settings(
+        settings_values(),
+        analysis_type,
+    )
 
     assert result.security_type == "trustedLaunch"
-    assert result.vm_size is None
+    assert result.vm_size == "Standard_D32s_v3"
     assert result.secure_boot_enabled is None
     assert result.v_tpm_enabled is None
+    assert result.conda_path == "/usr/bin/miniconda/bin"
+    assert result.runtime_bin_path == "/usr/bin/miniconda/bin"
+    assert result.mamba_root_prefix is None
 
 
 def test_settings_rejects_unsupported_analysis_type():
@@ -290,20 +316,6 @@ def test_create_pool_applies_trusted_launch_to_existing_workflows(
     assert profile.uefi_settings is None
 
 
-def test_create_pool_rejects_missing_vm_size():
-    settings = Settings(settings_values(), "COWBAT")
-
-    with pytest.raises(ValueError, match="Batch VM size"):
-        create_pool(
-            batch_service_client=Mock(),
-            pool_id="cowbat-pool",
-            vm_size=None,
-            container_name="cowbat-run",
-            mount_path="cowbat-run",
-            settings=settings,
-        )
-
-
 def test_generate_sas_url_for_blob_and_container():
     blob_url = generate_sas_url(
         account_name="storage",
@@ -329,21 +341,40 @@ def test_generate_sas_url_for_blob_and_container():
 
 
 def test_add_tasks_quotes_shell_command_safely():
+    settings = Mock(
+        conda_path="/usr/bin/miniconda/bin",
+        runtime_bin_path="/usr/bin/miniconda/bin",
+        mamba_root_prefix=None,
+    )
+
     tasks = []
-    command = 'printf "%s" "hello world"'
+    sys_call = 'printf "%s" "hello world"'
+
     add_tasks(
-        task_id="nanopore-task-0",
+        task_id="test-task",
         tasks=tasks,
         resource_input_files=[],
         resource_output_files=[],
-        sys_call=command,
+        settings=settings,
+        sys_call=sys_call,
     )
+
     assert len(tasks) == 1
-    assert tasks[0].command_line == f"/bin/bash -c {shlex.quote(command)}"
-    assert tasks[0].constraints.max_wall_clock_time == "PT16H"
-    assert tasks[0].user_identity.auto_user.elevation_level == (
-        batchmodels.ElevationLevel.admin
+
+    task = tasks[0]
+
+    expected_wrapped_call = (
+        'export PATH="${FOODPORT_RUNTIME_PATH}:${PATH}"; ' + sys_call
     )
+
+    assert task.command_line == ("/bin/bash -c " + shlex.quote(expected_wrapped_call))
+
+    environment = {item.name: item.value for item in task.environment_settings}
+
+    assert environment == {
+        "CONDA": "/usr/bin/miniconda/bin",
+        "FOODPORT_RUNTIME_PATH": "/usr/bin/miniconda/bin",
+    }
 
 
 @patch("azure_batch.methods.generate_container_sas", return_value="sas-token")
@@ -437,3 +468,97 @@ def test_wait_for_tasks_to_complete_times_out():
             "job-id",
             datetime.timedelta(seconds=0),
         )
+
+
+def test_add_tasks_configures_nanopore_micromamba_runtime():
+    settings = Settings(
+        settings_values(),
+        "Nanopore",
+    )
+
+    tasks = []
+    sys_call = "python scheduler.py input.csv metadata.csv"
+
+    add_tasks(
+        task_id="nanopore-task",
+        tasks=tasks,
+        resource_input_files=[],
+        resource_output_files=[],
+        settings=settings,
+        sys_call=sys_call,
+    )
+
+    assert len(tasks) == 1
+
+    task = tasks[0]
+
+    environment = {
+        item.name: item.value
+        for item in task.environment_settings
+    }
+
+    assert environment["CONDA"] == "/opt/micromamba/bin"
+    assert (
+        environment["MAMBA_ROOT_PREFIX"]
+        == "/opt/micromamba/root"
+    )
+    assert environment["FOODPORT_RUNTIME_PATH"] == (
+        "/opt/micromamba/root/envs/poresippr/bin:"
+        "/opt/micromamba/bin:"
+        "/opt/ont/dorado/bin:"
+        "/usr/local/bin:"
+        "/usr/bin:"
+        "/bin"
+    )
+
+    expected_wrapped_call = (
+        'export PATH="${FOODPORT_RUNTIME_PATH}:${PATH}"; '
+        + sys_call
+    )
+
+    assert task.command_line == (
+        "/bin/bash -c "
+        + shlex.quote(expected_wrapped_call)
+    )
+
+
+def test_nanopore_uses_configured_gpu_size():
+    settings = Settings(
+        settings_values(),
+        "Nanopore",
+    )
+    client = Mock()
+
+    create_pool(
+        batch_service_client=client,
+        pool_id="nanopore-pool",
+        vm_size="",
+        container_name="nanopore-run",
+        mount_path="nanopore-run",
+        settings=settings,
+    )
+
+    pool = client.pool.add.call_args.args[0]
+
+    assert pool.vm_size == "Standard_NV18ads_A10_v5"
+
+
+def test_explicit_vm_size_overrides_analysis_default():
+    settings = Settings(
+        settings_values(),
+        "Nanopore",
+    )
+    client = Mock()
+
+    create_pool(
+        batch_service_client=client,
+        pool_id="nanopore-pool",
+        vm_size="Standard_D4ds_v5",
+        container_name="nanopore-run",
+        mount_path="nanopore-run",
+        settings=settings,
+    )
+
+    pool = client.pool.add.call_args.args[0]
+
+    assert pool.vm_size == "Standard_D4ds_v5"

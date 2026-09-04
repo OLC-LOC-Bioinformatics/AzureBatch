@@ -79,6 +79,7 @@ def test_worker_submission_returns_deterministic_identifiers(
         tasks=[],
         resource_input_files=[],
         resource_output_files=["logs"],
+        settings=batch.settings,
         sys_call=batch.sys_call[0],
     )
     batch_client.task.add_collection.assert_called_once_with(

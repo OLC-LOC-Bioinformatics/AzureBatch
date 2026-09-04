@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch, PropertyMock
 
 # Third party imports
 import azure.batch.models as batchmodels
+import pytest
 from azure.batch.models import BatchErrorException
 from azure.core.exceptions import ResourceExistsError
 from azure.storage.blob import BlobServiceClient
@@ -55,6 +56,7 @@ def settings_values():
         "AZURE_ACCOUNT_KEY": "storage-key",
         "BATCH_ACCOUNT_URL": "https://batch.example.test",
         "BATCH_ACCOUNT_SUBNET": "/subscriptions/test/subnets/batch",
+        "BATCH_VM_SIZE": "Standard_D32s_v3",
         "BATCH_SECURITY_TYPE": "trustedLaunch",
         "VM_SECRET": "secret",
         "VM_CLIENT_ID": "client-id",
@@ -71,6 +73,16 @@ def settings_values():
         "NANOPORE_SECURITY_TYPE": "trustedLaunch",
         "NANOPORE_SECURE_BOOT_ENABLED": "false",
         "NANOPORE_VTPM_ENABLED": "false",
+        "NANOPORE_CONDA_PATH": "/opt/micromamba/bin",
+        "NANOPORE_MAMBA_ROOT_PREFIX": "/opt/micromamba/root",
+        "NANOPORE_RUNTIME_BIN_PATH": (
+            "/opt/micromamba/root/envs/poresippr/bin:"
+            "/opt/micromamba/bin:"
+            "/opt/ont/dorado/bin:"
+            "/usr/local/bin:"
+            "/usr/bin:"
+            "/bin"
+        ),
     }
 
 
@@ -133,7 +145,10 @@ class TestSettings:
         assert settings_obj.security_type == "trustedLaunch"
         assert settings_obj.secure_boot_enabled is None
         assert settings_obj.v_tpm_enabled is None
-        assert settings_obj.vm_size is None
+        assert settings_obj.vm_size == "Standard_D32s_v3"
+        assert settings_obj.conda_path == "/usr/bin/miniconda/bin"
+        assert settings_obj.runtime_bin_path == "/usr/bin/miniconda/bin"
+        assert settings_obj.mamba_root_prefix is None
 
 
 class TestPrintBatchException:
@@ -330,18 +345,27 @@ def test_add_tasks():
     resource_output_files = ["output_file_1", "output_file_2"]
     sys_call = "test_sys_call"
 
+    settings = Mock(
+        conda_path="/usr/bin/miniconda/bin",
+        runtime_bin_path="/usr/bin/miniconda/bin",
+        mamba_root_prefix=None,
+    )
+
     result_tasks = add_tasks(
         task_id=task_id,
         tasks=tasks,
         resource_input_files=resource_input_files,
         resource_output_files=resource_output_files,
+        settings=settings,
         sys_call=sys_call,
     )
+
+    wrapped_call = 'export PATH="${FOODPORT_RUNTIME_PATH}:${PATH}"; ' + sys_call
 
     expected_task_add_parameter = batchmodels.TaskAddParameter(
         id=task_id,
         constraints=batchmodels.TaskConstraints(max_wall_clock_time="PT16H"),
-        command_line=f"/bin/bash -c {shlex.quote(sys_call)}",
+        command_line=("/bin/bash -c " + shlex.quote(wrapped_call)),
         resource_files=resource_input_files,
         output_files=resource_output_files,
         user_identity=batchmodels.UserIdentity(
@@ -355,23 +379,35 @@ def test_add_tasks():
                 name="CONDA",
                 value="/usr/bin/miniconda/bin",
             ),
+            batchmodels.EnvironmentSetting(
+                name="FOODPORT_RUNTIME_PATH",
+                value="/usr/bin/miniconda/bin",
+            ),
         ],
     )
 
     assert len(result_tasks) == 1
+
     actual = result_tasks[0]
+
     assert actual.id == expected_task_add_parameter.id
     assert actual.command_line == expected_task_add_parameter.command_line
     assert actual.constraints.max_wall_clock_time == "PT16H"
     assert actual.resource_files == resource_input_files
     assert actual.output_files == resource_output_files
+
     assert (
         actual.user_identity.auto_user.elevation_level
         == batchmodels.ElevationLevel.admin
     )
     assert actual.user_identity.auto_user.scope == batchmodels.AutoUserScope.pool
-    assert actual.environment_settings[0].name == "CONDA"
-    assert actual.environment_settings[0].value == "/usr/bin/miniconda/bin"
+
+    environment = {item.name: item.value for item in actual.environment_settings}
+
+    assert environment == {
+        "CONDA": "/usr/bin/miniconda/bin",
+        "FOODPORT_RUNTIME_PATH": "/usr/bin/miniconda/bin",
+    }
 
 
 @patch("azure_batch.methods.generate_container_sas", return_value="sas-token")
@@ -440,3 +476,27 @@ def test_general_uefi_settings_can_be_configured():
     assert result.security_type == "trustedLaunch"
     assert result.secure_boot_enabled is True
     assert result.v_tpm_enabled is True
+
+
+def test_create_pool_rejects_missing_explicit_and_configured_vm_size():
+    settings = Mock(
+        vm_image="/images/cowbat/versions/1",
+        node_agent_sku_id="batch.node.ubuntu 22.04",
+        batch_account_subnet="/subscriptions/test/subnets/batch",
+        azure_account_name="storage",
+        azure_account_key="storage-key",
+        security_type="trustedLaunch",
+        secure_boot_enabled=None,
+        v_tpm_enabled=None,
+        vm_size=None,
+    )
+
+    with pytest.raises(ValueError, match="Batch VM size"):
+        create_pool(
+            batch_service_client=Mock(),
+            pool_id="cowbat-pool",
+            vm_size="",
+            container_name="cowbat-run",
+            mount_path="cowbat-run",
+            settings=settings,
+        )

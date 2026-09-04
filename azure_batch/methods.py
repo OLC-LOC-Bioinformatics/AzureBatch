@@ -9,6 +9,7 @@ tasks, and, finally, download files for Azure batch analyses
 import datetime
 import logging
 import os
+import re
 import shlex
 import sys
 import time
@@ -147,7 +148,10 @@ class Settings:
         self.azure_account_key = settings["AZURE_ACCOUNT_KEY"]
         self.batch_account_url = settings["BATCH_ACCOUNT_URL"]
         self.batch_account_subnet = settings["BATCH_ACCOUNT_SUBNET"]
-        self.vm_size = None
+        self.vm_size = settings.get(
+            "BATCH_VM_SIZE",
+            "Standard_D32s_v3",
+        )
 
         # All current FoodPort Compute Gallery images require Trusted Launch.
         self.security_type = settings.get(
@@ -166,6 +170,25 @@ class Settings:
             settings.get("BATCH_VTPM_ENABLED"),
             default=None,
         )
+
+        # Set the path to the conda executable, defaulting to
+        # /usr/bin/miniconda/bin if not specified in settings
+        self.conda_path = settings.get(
+            "CONDA_PATH",
+            "/usr/bin/miniconda/bin",
+        )
+
+        self.runtime_bin_path = setting_or_default(
+            settings=settings,
+            key="BATCH_RUNTIME_BIN_PATH",
+            default=self.conda_path,
+        )
+
+        self.mamba_root_prefix = settings.get(
+            "MAMBA_ROOT_PREFIX",
+        )
+
+        # Set the VM image and node agent SKU ID based on the analysis type
         if analysis_type == "COWBAT":
             self.vm_image = settings["VM_IMAGE"]
             self.node_agent_sku_id = settings["COWBAT_NODE_AGENT_SKU"]
@@ -177,19 +200,47 @@ class Settings:
             self.node_agent_sku_id = settings["COWSNPHR_NODE_AGENT_SKU"]
         elif analysis_type == "Nanopore":
             self.vm_image = settings["NANOPORE_IMAGE"]
-            self.node_agent_sku_id = settings["NANOPORE_NODE_AGENT_SKU"]
+            self.node_agent_sku_id = settings[
+                "NANOPORE_NODE_AGENT_SKU"
+            ]
             self.vm_size = settings["NANOPORE_BATCH_VM_SIZE"]
+
             self.security_type = settings.get(
                 "NANOPORE_SECURITY_TYPE",
-                "trustedLaunch",
+                self.security_type,
             )
+
             self.secure_boot_enabled = parse_boolean_setting(
                 settings.get("NANOPORE_SECURE_BOOT_ENABLED"),
                 default=False,
             )
+
             self.v_tpm_enabled = parse_boolean_setting(
                 settings.get("NANOPORE_VTPM_ENABLED"),
                 default=False,
+            )
+
+            self.conda_path = settings.get(
+                "NANOPORE_CONDA_PATH",
+                "/opt/micromamba/bin",
+            )
+
+            self.runtime_bin_path = setting_or_default(
+                settings=settings,
+                key="NANOPORE_RUNTIME_BIN_PATH",
+                default=(
+                    "/opt/micromamba/root/envs/poresippr/bin:"
+                    "/opt/micromamba/bin:"
+                    "/opt/ont/dorado/bin:"
+                    "/usr/local/bin:"
+                    "/usr/bin:"
+                    "/bin"
+                ),
+            )
+
+            self.mamba_root_prefix = settings.get(
+                "NANOPORE_MAMBA_ROOT_PREFIX",
+                "/opt/micromamba/root",
             )
         else:
             raise ValueError(f"Unsupported analysis type: {analysis_type}")
@@ -207,6 +258,35 @@ class Settings:
             self.secure_boot_enabled,
             self.v_tpm_enabled,
         )
+
+
+def setting_or_default(
+    *,  # Enforce keyword-only arguments
+    settings: dict,
+    key: str,
+    default,
+) -> str:
+    """
+    Return a nonempty configuration value or its default.
+    
+    :param settings: A dictionary of configuration settings.
+    :param key: The key to look up in the settings.
+    :param default: The default value to return if the key is not found or
+    the value is empty.
+    :return: The value from settings if it exists and is nonempty, otherwise
+    the default value.
+    """
+    value = settings.get(key)
+
+    if value is None:
+        return default
+
+    value = str(value).strip()
+
+    if not value:
+        return default
+
+    return value
 
 
 def print_batch_exception(batch_exception: batchmodels.BatchErrorException):
@@ -318,7 +398,6 @@ def create_pool(
     :param Settings settings: The settings object containing configuration
     details
     """
-    
     # Create a Batch pool from a Compute Gallery image.
     image_ref = batchmodels.ImageReference(
         virtual_machine_image_id=settings.vm_image,
@@ -431,6 +510,7 @@ def add_tasks(
     tasks: list,
     resource_input_files: list,
     resource_output_files: list,
+    settings: Settings,
     sys_call: str,
 ) -> list:
     """
@@ -440,6 +520,7 @@ def add_tasks(
     :param list resource_input_files: A collection of input files to add to
     the task
     :param list resource_output_files: List of azure.batch.models.OutputFiles
+    :param Settings settings: Class containing environment variables
     :param str sys_call: The system call to perform
     :return list tasks: Task list with appended task
     """
@@ -450,7 +531,12 @@ def add_tasks(
     # Since the system command does not run under a shell, prepend /bin/bash
     # -c to the command to allow for environment
     # variable expansion
-    command = f"/bin/bash -c {shlex.quote(sys_call)}"
+    wrapped_call = (
+        'export PATH="${FOODPORT_RUNTIME_PATH}:${PATH}"; '
+        + sys_call
+    )
+
+    command = f"/bin/bash -c {shlex.quote(wrapped_call)}"
     # Run the task as an auto-user with elevated access. Necessary for using
     # blobfuse filesystems
     # https://learn.microsoft.com/en-us/azure/batch/batch-user-accounts#run-a-task-as-an-auto-user-with-elevated-access
@@ -460,6 +546,46 @@ def add_tasks(
             scope=batchmodels.AutoUserScope.pool,
         )
     )
+
+    # Set the path to the conda executable, defaulting to
+    # /usr/bin/miniconda/bin if not specified in settings
+    conda_path = getattr(
+        settings,
+        "conda_path",
+        "/usr/bin/miniconda/bin",
+    )
+
+    runtime_bin_path = getattr(
+        settings,
+        "runtime_bin_path",
+        conda_path,
+    )
+
+    environment_settings = [
+        batchmodels.EnvironmentSetting(
+            name="CONDA",
+            value=conda_path,
+        ),
+        batchmodels.EnvironmentSetting(
+            name="FOODPORT_RUNTIME_PATH",
+            value=runtime_bin_path,
+        ),
+    ]
+
+    mamba_root_prefix = getattr(
+        settings,
+        "mamba_root_prefix",
+        None,
+    )
+
+    if mamba_root_prefix:
+        environment_settings.append(
+            batchmodels.EnvironmentSetting(
+                name="MAMBA_ROOT_PREFIX",
+                value=mamba_root_prefix,
+            )
+        )
+
     tasks.append(
         batchmodels.TaskAddParameter(
             id=task_id,
@@ -468,11 +594,7 @@ def add_tasks(
             resource_files=resource_input_files,
             output_files=resource_output_files,
             user_identity=user,
-            environment_settings=[
-                batchmodels.EnvironmentSetting(
-                    name="CONDA", value="/usr/bin/miniconda/bin"
-                ),
-            ],
+            environment_settings=environment_settings,
         )
     )
     return tasks
