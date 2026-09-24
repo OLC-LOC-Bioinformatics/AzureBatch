@@ -54,44 +54,109 @@ def _task_collection_errors(results):
     errors = []
 
     for result in result_items:
-        status = str(getattr(result, "status", "")).lower()
-        if status in {"success", "succeeded"}:
+        status_object = getattr(result, "status", None)
+        status_value = getattr(
+            status_object,
+            "value",
+            status_object,
+        )
+        status = str(status_value or "").strip().lower()
+
+
+        # Some SDK enum implementations render as
+        # "TaskAddStatus.success" rather than simply "success".
+        if "." in status:
+            status = status.rsplit(".", 1)[-1]
+        status = status.replace("_", "").replace("-", "")
+
+        # A successful status takes precedence because some Azure SDK
+        # versions include an empty error model on successful results.
+        if status in ("success", "succeeded"):
             continue
 
         error = getattr(result, "error", None)
-        code = getattr(error, "code", None) if error else None
-        message = getattr(error, "message", None) if error else None
+        code = getattr(error, "code", None) if error is not None else None
+        message = getattr(error, "message", None) if error is not None else None
+
+        if hasattr(message, "value"):
+            message = message.value
+
+        code = str(code).strip() if code else ""
+        message = str(message).strip() if message else ""
         task_id = getattr(result, "task_id", None)
-        details = ": ".join(
-            str(value)
-            for value in (code, message)
-            if value
-        ) or "Azure Batch rejected the task."
+
+        # Preserve the historical behaviour when the SDK provides neither
+        # a useful status nor meaningful error information. add_collection
+        # itself will already have raised for request-level failures.
+        if not status and not code and not message:
+            continue
+
+        # An empty error model without a failure status is not actionable.
+        if (
+            not code
+            and not message
+            and status
+            not in (
+                "clienterror",
+                "servererror",
+                "failure",
+                "failed",
+            )
+        ):
+            continue
+
+        details = ": ".join(value for value in (code, message) if value)
+
+        if not details:
+            details = (
+                "Azure Batch returned task-add status "
+                f"{status or '<missing>'}."
+            )
+
         if task_id:
-            details = "{}: {}".format(task_id, details)
+            details = "{0}: {1}".format(task_id, details)
+
         errors.append(details)
 
     return errors
 
 
-def _delete_batch_resources(batch_client, job_id, pool_id,
-                            job_created, pool_created, logger):
+def _delete_batch_resources(
+    batch_client,
+    job_id,
+    pool_id,
+    job_created,
+    pool_created,
+    logger,
+):
     """Best-effort cleanup after a partial worker submission."""
     cleanup_errors = []
 
     if job_created:
         try:
+            logger.warning(
+                "Deleting Batch job %s during submission rollback",
+                job_id,
+            )
             batch_client.job.delete(job_id)
         except Exception as exc:
             logger.exception("Could not delete Batch job %s", job_id)
-            cleanup_errors.append("job {}: {}".format(job_id, exc))
+            cleanup_errors.append(
+                "job {0}: {1}".format(job_id, exc)
+            )
 
     if pool_created:
         try:
+            logger.warning(
+                "Deleting Batch pool %s during submission rollback",
+                pool_id,
+            )
             batch_client.pool.delete(pool_id)
         except Exception as exc:
             logger.exception("Could not delete Batch pool %s", pool_id)
-            cleanup_errors.append("pool {}: {}".format(pool_id, exc))
+            cleanup_errors.append(
+                "pool {0}: {1}".format(pool_id, exc)
+            )
 
     return cleanup_errors
 
@@ -299,10 +364,34 @@ class AzureBatch:
                 task_ids,
                 job_id,
             )
-            results = batch_client.task.add_collection(
-                job_id=job_id,
-                value=tasks,
-            )
+            try:
+                results = batch_client.task.add_collection(
+                    job_id=job_id,
+                    value=tasks,
+                )
+            except Exception:
+                self.logger.exception(
+                    "Azure Batch task submission raised an exception for "
+                    "job %s",
+                    job_id,
+                )
+                raise
+
+            result_items = getattr(results, "value", results) or []
+
+            for result in result_items:
+                status_object = getattr(result, "status", None)
+                status_value = getattr(status_object, "value", status_object)
+
+                self.logger.warning(
+                    "Azure Batch task-add result: task_id=%s "
+                    "status=%r status_value=%r error=%r",
+                    getattr(result, "task_id", None),
+                    status_object,
+                    status_value,
+                    getattr(result, "error", None),
+                )
+
             task_errors = _task_collection_errors(results)
             if task_errors:
                 raise RuntimeError(
@@ -322,7 +411,7 @@ class AzureBatch:
             if self.worker:
                 self.logger.warning(
                     "Returning pool (%s), job (%s), and task ID (%s), as well "
-                    "as status (success), and error (None)",
+                    "as status (Success), and error (empty)",
                     pool_id,
                     job_id,
                     task_ids,
@@ -366,6 +455,13 @@ class AzureBatch:
             self.logger.warning("Elapsed time: %s", elapsed_time)
 
         except Exception as err:
+            self.logger.exception(
+                "Batch submission failed for pool=%s job=%s tasks=%s",
+                pool_id,
+                job_id,
+                task_ids,
+            )
+
             if isinstance(err, batchmodels.BatchErrorException):
                 print_batch_exception(err)
 
@@ -386,6 +482,7 @@ class AzureBatch:
                     "tasks": task_ids,
                     "status": "Failure",
                     "error": str(err),
+                    "cleanup_performed": not self.no_tidy,
                     "cleanup_errors": cleanup_errors,
                 }
             raise
