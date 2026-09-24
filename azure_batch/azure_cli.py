@@ -34,6 +34,8 @@ from azure_batch.methods import (
     parse_resource_file_list,
     parse_resource_input_pattern,
     prep_resource_files,
+    prepare_nanopore_task_sas,
+    prepare_output_resource_files,
     print_batch_exception,
     read_bulk_input_pattern,
     read_command_file,
@@ -42,9 +44,56 @@ from azure_batch.methods import (
 )
 from azure_storage.methods import validate_container_name
 from dotenv import dotenv_values, load_dotenv
-from flask import jsonify
 
 __author__ = "adamkoziol"
+
+
+def _task_collection_errors(results):
+    """Return task-addition error descriptions from an SDK response."""
+    result_items = getattr(results, "value", results) or []
+    errors = []
+
+    for result in result_items:
+        status = str(getattr(result, "status", "")).lower()
+        if status in {"success", "succeeded"}:
+            continue
+
+        error = getattr(result, "error", None)
+        code = getattr(error, "code", None) if error else None
+        message = getattr(error, "message", None) if error else None
+        task_id = getattr(result, "task_id", None)
+        details = ": ".join(
+            str(value)
+            for value in (code, message)
+            if value
+        ) or "Azure Batch rejected the task."
+        if task_id:
+            details = "{}: {}".format(task_id, details)
+        errors.append(details)
+
+    return errors
+
+
+def _delete_batch_resources(batch_client, job_id, pool_id,
+                            job_created, pool_created, logger):
+    """Best-effort cleanup after a partial worker submission."""
+    cleanup_errors = []
+
+    if job_created:
+        try:
+            batch_client.job.delete(job_id)
+        except Exception as exc:
+            logger.exception("Could not delete Batch job %s", job_id)
+            cleanup_errors.append("job {}: {}".format(job_id, exc))
+
+    if pool_created:
+        try:
+            batch_client.pool.delete(pool_id)
+        except Exception as exc:
+            logger.exception("Could not delete Batch pool %s", pool_id)
+            cleanup_errors.append("pool {}: {}".format(pool_id, exc))
+
+    return cleanup_errors
 
 
 class AzureBatch:
@@ -160,6 +209,8 @@ class AzureBatch:
         # As there can be multiple tasks, add an integer to the task ID to
         # keep them unique
         task_count = 0
+        pool_created = False
+        job_created = False
         try:
             # Create the pool that will contain compute nodes to perform
             # the analyses
@@ -172,20 +223,41 @@ class AzureBatch:
                 container_name=self.container,
                 mount_path=self.container,
             )
+            pool_created = True
             # Create the job that will run the tasks.
             self.logger.warning("Creating job %s in pool %s", job_id, pool_id)
             create_job(
                 batch_service_client=batch_client, job_id=job_id, pool_id=pool_id
             )
+            job_created = True
 
             # Add the log files to the list of output files
             output_files = log_output_resource_files(
                 blob_storage_service_client=self.blob_service_client,
                 output_files=[],
                 settings=self.settings,
-                output_container_name=self.container,
+                output_container_name=self.output_container,
                 log_prefix=self.log_prefix,
             )
+            for output_item in self.output_file_pattern:
+                prepare_output_resource_files(
+                    blob_storage_service_client=self.blob_service_client,
+                    output_item=output_item,
+                    output_files=output_files,
+                    settings=self.settings,
+                    output_container_name=self.output_container,
+                    destination_prefix=self.output_prefix,
+                )
+
+            if self.settings.analysis_type == "Nanopore":
+                (
+                    self.settings.nanopore_input_sas_url,
+                    self.settings.nanopore_output_sas_url,
+                ) = prepare_nanopore_task_sas(
+                    self.settings,
+                    self.container,
+                    self.output_container,
+                )
 
             # Create a list to store the task(s)
             tasks = []
@@ -216,11 +288,34 @@ class AzureBatch:
                 # Append the task ID to the list of task IDs
                 task_ids.append(specific_task_id)
                 task_count += 1
-            # Add the task(s) to the job.
-            batch_client.task.add_collection(job_id=job_id, value=tasks)
+            if not tasks or not task_ids:
+                raise RuntimeError(
+                    "No Azure Batch tasks were constructed from the "
+                    "command file."
+                )
 
-            # Log the task info
-            self.logger.warning("Created tasks %s", task_ids)
+            self.logger.warning(
+                "Submitting tasks %s to job %s",
+                task_ids,
+                job_id,
+            )
+            results = batch_client.task.add_collection(
+                job_id=job_id,
+                value=tasks,
+            )
+            task_errors = _task_collection_errors(results)
+            if task_errors:
+                raise RuntimeError(
+                    "Azure Batch task submission failed: {}".format(
+                        "; ".join(task_errors)
+                    )
+                )
+
+            self.logger.warning(
+                "Submitted tasks %s to job %s",
+                task_ids,
+                job_id,
+            )
 
             # If this code is called by FoodPort, the task completion, file
             # download, and pool/job cleanup will be handled separately
@@ -232,15 +327,14 @@ class AzureBatch:
                     job_id,
                     task_ids,
                 )
-                return jsonify(
-                    {
-                        "pool_id": pool_id,
-                        "job_id": job_id,
-                        "tasks": task_ids,
-                        "status": "Success",
-                        "error": "",
-                    }
-                )
+                return {
+                    "pool_id": pool_id,
+                    "job_id": job_id,
+                    "tasks": task_ids,
+                    "status": "Success",
+                    "error": "",
+                    "cleanup_errors": [],
+                }
 
             # Pause execution until tasks reach Completed state.
             wait_for_tasks_to_complete(
@@ -271,18 +365,29 @@ class AzureBatch:
             elapsed_time = end_time - self.start_time
             self.logger.warning("Elapsed time: %s", elapsed_time)
 
-        except batchmodels.BatchErrorException as err:
-            print_batch_exception(err)
+        except Exception as err:
+            if isinstance(err, batchmodels.BatchErrorException):
+                print_batch_exception(err)
+
             if self.worker:
-                return jsonify(
-                    {
-                        "pool_id": pool_id,
-                        "job_id": job_id,
-                        "tasks": task_ids,
-                        "status": "Failure",
-                        "error": str(err),
-                    }
-                )
+                cleanup_errors = []
+                if not self.no_tidy:
+                    cleanup_errors = _delete_batch_resources(
+                        batch_client,
+                        job_id,
+                        pool_id,
+                        job_created,
+                        pool_created,
+                        self.logger,
+                    )
+                return {
+                    "pool_id": pool_id,
+                    "job_id": job_id,
+                    "tasks": task_ids,
+                    "status": "Failure",
+                    "error": str(err),
+                    "cleanup_errors": cleanup_errors,
+                }
             raise
         finally:
             if not self.worker and not self.no_tidy:
@@ -302,6 +407,9 @@ class AzureBatch:
         input_file_pattern=None,
         bulk_input_file_pattern=None,
         download_file_pattern=None,
+        output_file_pattern=None,
+        output_container=None,
+        output_prefix=None,
         unique_id=None,
         worker=True,
         no_tidy=False,
@@ -341,6 +449,9 @@ class AzureBatch:
         self.vm_size = vm_size
         self.worker = worker
         self.download_file_pattern = download_file_pattern
+        self.output_file_pattern = output_file_pattern or []
+        self.output_container = output_container or container
+        self.output_prefix = output_prefix or ""
         self.no_tidy = no_tidy
         self.log_prefix = log_prefix
 

@@ -18,6 +18,8 @@ from azure_batch.methods import (
     log_output_resource_files,
     parse_boolean_setting,
     parse_resource_input_pattern,
+    prepare_nanopore_task_sas,
+    prepare_output_resource_files,
     prep_output_container,
     read_command_file,
     wait_for_tasks_to_complete,
@@ -377,6 +379,31 @@ def test_add_tasks_quotes_shell_command_safely():
     }
 
 
+@patch("azure_batch.methods.generate_container_sas")
+def test_prepare_nanopore_task_sas_scopes_input_and_output(mock_generate):
+    mock_generate.side_effect = ["input-token", "output-token"]
+    settings = Mock(azure_account_name="storage", azure_account_key="key")
+
+    input_url, output_url = prepare_nanopore_task_sas(
+        settings, "nanopore-raw", "nanopore-results"
+    )
+
+    assert input_url == (
+        "https://storage.blob.core.windows.net/nanopore-raw?input-token"
+    )
+    assert output_url == (
+        "https://storage.blob.core.windows.net/nanopore-results?output-token"
+    )
+    input_permissions = mock_generate.call_args_list[0].kwargs["permission"]
+    output_permissions = mock_generate.call_args_list[1].kwargs["permission"]
+    assert input_permissions.read is True
+    assert input_permissions.list is True
+    assert input_permissions.write is False
+    assert output_permissions.read is True
+    assert output_permissions.write is True
+    assert output_permissions.create is True
+
+
 @patch("azure_batch.methods.generate_container_sas", return_value="sas-token")
 def test_prep_output_container_returns_container_sas(mock_generate):
     client = Mock()
@@ -395,6 +422,25 @@ def test_prep_output_container_accepts_existing_container(_mock_generate):
     settings = Mock(azure_account_name="storage", azure_account_key="key")
     result = prep_output_container("nanopore-runs", settings, client)
     assert result.endswith("nanopore-runs?sas-token")
+
+@patch("azure_batch.methods.prep_output_container", return_value="sas-url")
+def test_nanopore_output_folder_uses_run_prefix_for_root_and_nested_files(
+    _mock_prep_output,
+):
+    output_files = prepare_output_resource_files(
+        blob_storage_service_client=Mock(),
+        output_item="output/",
+        output_files=[],
+        settings=Mock(),
+        output_container_name="nanopore-results",
+        destination_prefix="runs/example",
+    )
+
+    assert len(output_files) == 2
+    assert output_files[0].file_pattern == "output/*"
+    assert output_files[0].destination.container.path == "runs/example/output"
+    assert output_files[1].file_pattern == "output/**/*"
+    assert output_files[1].destination.container.path == "runs/example/output"
 
 
 @patch(
@@ -520,6 +566,26 @@ def test_add_tasks_configures_nanopore_micromamba_runtime():
         "/bin/bash -c "
         + shlex.quote(expected_wrapped_call)
     )
+
+
+def test_add_tasks_injects_nanopore_sas_urls_when_configured():
+    settings = Settings(settings_values(), "Nanopore")
+    settings.nanopore_input_sas_url = "https://raw.example/sas"
+    settings.nanopore_output_sas_url = "https://results.example/sas"
+    tasks = []
+
+    add_tasks(
+        task_id="nanopore-sas-task",
+        tasks=tasks,
+        resource_input_files=[],
+        resource_output_files=[],
+        settings=settings,
+        sys_call="foodport-nanopore-task",
+    )
+
+    environment = {item.name: item.value for item in tasks[0].environment_settings}
+    assert environment["FOODPORT_INPUT_SAS_URL"] == "https://raw.example/sas"
+    assert environment["FOODPORT_OUTPUT_SAS_URL"] == "https://results.example/sas"
 
 
 def test_nanopore_uses_configured_gpu_size():

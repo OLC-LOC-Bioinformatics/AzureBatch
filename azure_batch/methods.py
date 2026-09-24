@@ -27,6 +27,7 @@ from azure.storage.blob import (
     AccountSasPermissions,
     BlobSasPermissions,
     BlobServiceClient,
+    ContainerSasPermissions,
     generate_blob_sas,
     generate_container_sas,
 )
@@ -200,9 +201,7 @@ class Settings:
             self.node_agent_sku_id = settings["COWSNPHR_NODE_AGENT_SKU"]
         elif analysis_type == "Nanopore":
             self.vm_image = settings["NANOPORE_IMAGE"]
-            self.node_agent_sku_id = settings[
-                "NANOPORE_NODE_AGENT_SKU"
-            ]
+            self.node_agent_sku_id = settings["NANOPORE_NODE_AGENT_SKU"]
             self.vm_size = settings["NANOPORE_BATCH_VM_SIZE"]
 
             self.security_type = settings.get(
@@ -268,7 +267,7 @@ def setting_or_default(
 ) -> str:
     """
     Return a nonempty configuration value or its default.
-    
+
     :param settings: A dictionary of configuration settings.
     :param key: The key to look up in the settings.
     :param default: The default value to return if the key is not found or
@@ -379,6 +378,47 @@ def generate_sas_url(
     return f"https://{account_name}.{account_domain}/{container_name}?{sas_token}"
 
 
+def prepare_nanopore_task_sas(
+    settings, input_container, output_container, expiry_hours=24
+):
+    """Create scoped input/output SAS URLs for a Nanopore task."""
+    expiry = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+        hours=expiry_hours
+    )
+    input_token = generate_container_sas(
+        account_name=settings.azure_account_name,
+        container_name=input_container,
+        account_key=settings.azure_account_key,
+        permission=ContainerSasPermissions(read=True, list=True),
+        expiry=expiry,
+    )
+    output_token = generate_container_sas(
+        account_name=settings.azure_account_name,
+        container_name=output_container,
+        account_key=settings.azure_account_key,
+        permission=ContainerSasPermissions(
+            read=True, write=True, create=True, list=True
+        ),
+        expiry=expiry,
+    )
+    return (
+        generate_sas_url(
+            settings.azure_account_name,
+            "blob.core.windows.net",
+            input_container,
+            "",
+            input_token,
+        ),
+        generate_sas_url(
+            settings.azure_account_name,
+            "blob.core.windows.net",
+            output_container,
+            "",
+            output_token,
+        ),
+    )
+
+
 def create_pool(
     batch_service_client: BatchServiceClient,
     pool_id: str,
@@ -436,9 +476,7 @@ def create_pool(
             v_tpm_enabled,
         )
     else:
-        logger.info(
-            "Configuring Batch VM without an explicit security profile"
-        )
+        logger.info("Configuring Batch VM without an explicit security profile")
 
     vm_config = batchmodels.VirtualMachineConfiguration(
         image_reference=image_ref,
@@ -531,10 +569,7 @@ def add_tasks(
     # Since the system command does not run under a shell, prepend /bin/bash
     # -c to the command to allow for environment
     # variable expansion
-    wrapped_call = (
-        'export PATH="${FOODPORT_RUNTIME_PATH}:${PATH}"; '
-        + sys_call
-    )
+    wrapped_call = 'export PATH="${FOODPORT_RUNTIME_PATH}:${PATH}"; ' + sys_call
 
     command = f"/bin/bash -c {shlex.quote(wrapped_call)}"
     # Run the task as an auto-user with elevated access. Necessary for using
@@ -584,6 +619,22 @@ def add_tasks(
                 name="MAMBA_ROOT_PREFIX",
                 value=mamba_root_prefix,
             )
+        )
+
+    input_sas_url = getattr(settings, "nanopore_input_sas_url", None)
+    output_sas_url = getattr(settings, "nanopore_output_sas_url", None)
+    if isinstance(input_sas_url, str) and isinstance(output_sas_url, str):
+        environment_settings.extend(
+            [
+                batchmodels.EnvironmentSetting(
+                    name="FOODPORT_INPUT_SAS_URL",
+                    value=input_sas_url,
+                ),
+                batchmodels.EnvironmentSetting(
+                    name="FOODPORT_OUTPUT_SAS_URL",
+                    value=output_sas_url,
+                ),
+            ]
         )
 
     tasks.append(
@@ -643,6 +694,7 @@ def prepare_output_resource_files(
     output_files: list,
     settings: Settings,
     output_container_name: str,
+    destination_prefix: str = "",
 ) -> list:
     """
     Create batchmodels.OutputFile object(s) for desired file/folder to be
@@ -663,6 +715,14 @@ def prepare_output_resource_files(
         settings=settings,
         blob_storage_service_client=blob_storage_service_client,
     )
+    destination_prefix = destination_prefix.strip("/")
+
+    def destination_path(path):
+        path = path.strip("/")
+        if destination_prefix and path:
+            return os.path.join(destination_prefix, path)
+        return destination_prefix or path
+
     # If the output_item ends with a /, it is a folder, so it needs to be
     # processed recursively
     if output_item.endswith("/"):
@@ -678,7 +738,8 @@ def prepare_output_resource_files(
                 destination=batchmodels.OutputFileDestination(
                     # Set the container output details
                     container=batchmodels.OutputFileBlobContainerDestination(
-                        container_url=sas_url, path=os.path.split(output_item)[0]
+                        container_url=sas_url,
+                        path=destination_path(os.path.split(output_item)[0]),
                     )
                 ),
                 # Upload the file when the task is successful
@@ -697,7 +758,9 @@ def prepare_output_resource_files(
                     container=batchmodels.OutputFileBlobContainerDestination(
                         container_url=sas_url,
                         # Remove the ** prepended to the file name
-                        path=os.path.split(output_item)[0].replace("**", ""),
+                        path=destination_path(
+                            os.path.split(output_item)[0].replace("**", "")
+                        ),
                     )
                 ),
                 upload_options=batchmodels.OutputFileUploadOptions(
@@ -715,7 +778,8 @@ def prepare_output_resource_files(
                 file_pattern=output_item,
                 destination=batchmodels.OutputFileDestination(
                     container=batchmodels.OutputFileBlobContainerDestination(
-                        container_url=sas_url, path=os.path.split(output_item)[0]
+                        container_url=sas_url,
+                        path=destination_path(os.path.split(output_item)[0]),
                     )
                 ),
                 upload_options=batchmodels.OutputFileUploadOptions(

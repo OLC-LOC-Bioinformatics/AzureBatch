@@ -3,7 +3,53 @@
 import datetime
 from unittest.mock import Mock, patch
 
-from azure_batch.azure_cli import AzureBatch
+from azure_batch.azure_cli import (
+    AzureBatch,
+    _delete_batch_resources,
+    _task_collection_errors,
+)
+
+
+def append_mock_task(task_id, tasks, **_kwargs):
+    """Make mocked add_tasks behave like the production helper."""
+    tasks.append(Mock(id=task_id))
+    return tasks
+
+
+def test_task_collection_errors_accepts_value_wrapped_results():
+    """Support Azure SDK responses that expose task results via value."""
+    successful = Mock(status="Success", task_id="task-1", error=None)
+    failed = Mock(
+        status="ClientError",
+        task_id="task-2",
+        error=Mock(code="InvalidTask", message="bad command"),
+    )
+    response = Mock(value=[successful, failed])
+
+    assert _task_collection_errors(response) == [
+        "task-2: InvalidTask: bad command"
+    ]
+
+
+def test_delete_batch_resources_preserves_all_cleanup_errors():
+    """Report cleanup failures without hiding either resource failure."""
+    client = Mock()
+    client.job.delete.side_effect = RuntimeError("job cleanup failed")
+    client.pool.delete.side_effect = RuntimeError("pool cleanup failed")
+
+    errors = _delete_batch_resources(
+        client,
+        "job-1",
+        "pool-1",
+        job_created=True,
+        pool_created=True,
+        logger=Mock(),
+    )
+
+    assert errors == [
+        "job job-1: job cleanup failed",
+        "pool pool-1: pool cleanup failed",
+    ]
 
 
 def make_batch(worker=True, no_tidy=False, unique_id="np-42-deadbeef"):
@@ -26,6 +72,9 @@ def make_batch(worker=True, no_tidy=False, unique_id="np-42-deadbeef"):
     item.vm_size = "Standard_NV18ads_A10_v5"
     item.worker = worker
     item.download_file_pattern = None
+    item.output_file_pattern = []
+    item.output_container = "nanopore-runs"
+    item.output_prefix = ""
     item.no_tidy = no_tidy
     item.log_prefix = "42/logs"
     item.sys_call = ["run_nanopore --manifest 42/manifests/abc.json"]
@@ -33,9 +82,11 @@ def make_batch(worker=True, no_tidy=False, unique_id="np-42-deadbeef"):
     return item
 
 
-@patch("azure_batch.azure_cli.jsonify", side_effect=lambda value: value)
 @patch("azure_batch.azure_cli.log_output_resource_files", return_value=["logs"])
-@patch("azure_batch.azure_cli.add_tasks")
+@patch(
+    "azure_batch.azure_cli.add_tasks",
+    side_effect=append_mock_task,
+)
 @patch("azure_batch.azure_cli.create_job")
 @patch("azure_batch.azure_cli.create_pool")
 @patch("azure_batch.azure_cli.BatchServiceClient")
@@ -47,7 +98,6 @@ def test_worker_submission_returns_deterministic_identifiers(
     mock_create_job,
     mock_add_tasks,
     _mock_logs,
-    _mock_jsonify,
 ):
     batch_client = mock_client_class.return_value
     batch = make_batch()
@@ -60,6 +110,7 @@ def test_worker_submission_returns_deterministic_identifiers(
         "tasks": ["nanopore-runs-np-42-deadbeef-task-0"],
         "status": "Success",
         "error": "",
+        "cleanup_errors": [],
     }
     mock_create_pool.assert_called_once_with(
         batch_service_client=batch_client,
@@ -74,24 +125,30 @@ def test_worker_submission_returns_deterministic_identifiers(
         job_id=result["job_id"],
         pool_id=result["pool_id"],
     )
-    mock_add_tasks.assert_called_once_with(
-        task_id=result["tasks"][0],
-        tasks=[],
-        resource_input_files=[],
-        resource_output_files=["logs"],
-        settings=batch.settings,
-        sys_call=batch.sys_call[0],
-    )
-    batch_client.task.add_collection.assert_called_once_with(
-        job_id=result["job_id"], value=[]
-    )
+    mock_add_tasks.assert_called_once()
+    add_call = mock_add_tasks.call_args.kwargs
+    assert add_call["task_id"] == result["tasks"][0]
+    assert len(add_call["tasks"]) == 1
+    assert add_call["tasks"][0].id == result["tasks"][0]
+    assert add_call["resource_input_files"] == []
+    assert add_call["resource_output_files"] == ["logs"]
+    assert add_call["settings"] is batch.settings
+    assert add_call["sys_call"] == batch.sys_call[0]
+
+    batch_client.task.add_collection.assert_called_once()
+    collection_call = batch_client.task.add_collection.call_args.kwargs
+    assert collection_call["job_id"] == result["job_id"]
+    assert len(collection_call["value"]) == 1
+    assert collection_call["value"][0].id == result["tasks"][0]
     batch_client.job.delete.assert_not_called()
     batch_client.pool.delete.assert_not_called()
 
 
-@patch("azure_batch.azure_cli.jsonify", side_effect=lambda value: value)
 @patch("azure_batch.azure_cli.log_output_resource_files", return_value=[])
-@patch("azure_batch.azure_cli.add_tasks")
+@patch(
+    "azure_batch.azure_cli.add_tasks",
+    side_effect=append_mock_task,
+)
 @patch("azure_batch.azure_cli.create_job")
 @patch("azure_batch.azure_cli.create_pool")
 @patch("azure_batch.azure_cli.BatchServiceClient")
@@ -103,7 +160,6 @@ def test_foodport_unique_id_uses_container_for_all_ids(
     _mock_job,
     _mock_add_tasks,
     _mock_logs,
-    _mock_jsonify,
 ):
     batch = make_batch(unique_id="FoodPort")
     result = batch.main()
@@ -116,7 +172,10 @@ def test_foodport_unique_id_uses_container_for_all_ids(
 @patch("azure_batch.azure_cli.download_files")
 @patch("azure_batch.azure_cli.wait_for_tasks_to_complete")
 @patch("azure_batch.azure_cli.log_output_resource_files", return_value=[])
-@patch("azure_batch.azure_cli.add_tasks")
+@patch(
+    "azure_batch.azure_cli.add_tasks",
+    side_effect=append_mock_task,
+)
 @patch("azure_batch.azure_cli.create_job")
 @patch("azure_batch.azure_cli.create_pool")
 @patch("azure_batch.azure_cli.BatchServiceClient")
@@ -152,7 +211,10 @@ def test_non_worker_waits_and_cleans_up(
 
 @patch("azure_batch.azure_cli.wait_for_tasks_to_complete")
 @patch("azure_batch.azure_cli.log_output_resource_files", return_value=[])
-@patch("azure_batch.azure_cli.add_tasks")
+@patch(
+    "azure_batch.azure_cli.add_tasks",
+    side_effect=append_mock_task,
+)
 @patch("azure_batch.azure_cli.create_job")
 @patch("azure_batch.azure_cli.create_pool")
 @patch("azure_batch.azure_cli.BatchServiceClient")
@@ -212,15 +274,62 @@ def test_initializer_builds_clients_and_reads_commands(
     assert batch.log_prefix == "42/logs"
 
 
+@patch("azure_batch.azure_cli.prepare_output_resource_files")
+@patch("azure_batch.azure_cli.log_output_resource_files", return_value=[])
+@patch(
+    "azure_batch.azure_cli.add_tasks",
+    side_effect=append_mock_task,
+)
+@patch("azure_batch.azure_cli.create_job")
+@patch("azure_batch.azure_cli.create_pool")
+@patch("azure_batch.azure_cli.BatchServiceClient")
+@patch("azure_batch.azure_cli.ServicePrincipalCredentials")
+def test_worker_submission_adds_outputs_to_separate_container(
+    _mock_credentials,
+    mock_client_class,
+    _mock_pool,
+    _mock_job,
+    _mock_add_tasks,
+    mock_logs,
+    mock_prepare_output,
+):
+    batch = make_batch()
+    batch.output_file_pattern = ["output/"]
+    batch.output_container = "nanopore-results"
+    batch.output_prefix = "runs/example"
+
+    result = batch.main()
+
+    assert result["status"] == "Success"
+    assert result["cleanup_errors"] == []
+    mock_logs.assert_called_once_with(
+        blob_storage_service_client=batch.blob_service_client,
+        output_files=[],
+        settings=batch.settings,
+        output_container_name="nanopore-results",
+        log_prefix="42/logs",
+    )
+    mock_prepare_output.assert_called_once_with(
+        blob_storage_service_client=batch.blob_service_client,
+        output_item="output/",
+        output_files=[],
+        settings=batch.settings,
+        output_container_name="nanopore-results",
+        destination_prefix="runs/example",
+    )
+
+
 @patch("azure_batch.azure_cli.copy_blobs_to_container")
 @patch("azure_batch.azure_cli.match_file_and_expression")
 @patch("azure_batch.azure_cli.parse_resource_file_list")
 @patch("azure_batch.azure_cli.prep_resource_files")
 @patch("azure_batch.azure_cli.parse_resource_input_pattern")
 @patch("azure_batch.azure_cli.read_bulk_input_pattern")
-@patch("azure_batch.azure_cli.jsonify", side_effect=lambda value: value)
 @patch("azure_batch.azure_cli.log_output_resource_files", return_value=[])
-@patch("azure_batch.azure_cli.add_tasks")
+@patch(
+    "azure_batch.azure_cli.add_tasks",
+    side_effect=append_mock_task,
+)
 @patch("azure_batch.azure_cli.create_job")
 @patch("azure_batch.azure_cli.create_pool")
 @patch("azure_batch.azure_cli.BatchServiceClient")
@@ -232,7 +341,6 @@ def test_bulk_input_is_prepared_before_submission(
     _mock_job,
     _mock_add_tasks,
     _mock_logs,
-    _mock_jsonify,
     mock_read_bulk,
     mock_parse_patterns,
     mock_prep_files,
